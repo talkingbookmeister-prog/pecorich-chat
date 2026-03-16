@@ -78,23 +78,20 @@ html,body{height:100%;font-family:'Noto Sans JP',sans-serif;background:var(--bg)
   </div>
 </div>
 <script>
-/* ===== 設定 ===== */
 var AI_ENDPOINT = "https://lively-math-3076.talkingbookmeister.workers.dev";
 var WIXBASE     = "https://www.jointlab.jp/_functions";
-var CACHE_KEY  = "pecorich_jobs_cache";
-var CACHE_TIME = "pecorich_jobs_time";
-var CACHE_MIN  = 60;
-var JOB_DATA   = [];
-var isSending  = false;
+var CACHE_KEY   = "pecorich_jobs_cache";
+var CACHE_TIME  = "pecorich_jobs_time";
+var CACHE_MIN   = 60;
+var JOB_DATA    = [];
+var isSending   = false;
 
 /* ===== 求人データ取得 ===== */
 function fetchJobs(force) {
-  var now     = Date.now();
-  var cached  = localStorage.getItem(CACHE_KEY);
-  var cachedAt= parseInt(localStorage.getItem(CACHE_TIME)||"0");
-  var ageMin  = (now - cachedAt) / 60000;
-  var bar     = document.getElementById("sync-bar");
-  var msg     = document.getElementById("sync-msg");
+  var now      = Date.now();
+  var cached   = localStorage.getItem(CACHE_KEY);
+  var cachedAt = parseInt(localStorage.getItem(CACHE_TIME) || "0");
+  var ageMin   = (now - cachedAt) / 60000;
 
   if (!force && cached && ageMin < CACHE_MIN) {
     JOB_DATA = JSON.parse(cached);
@@ -102,25 +99,24 @@ function fetchJobs(force) {
     return Promise.resolve(JOB_DATA);
   }
 
-  bar.className = "";
-  msg.textContent = "最新求人データを取得中…";
+  setSyncBar("", "最新求人データを取得中…");
 
   return fetch(WIXBASE + "/getJobs")
-    .then(function(r){ return r.json(); })
-    .then(function(d){
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
       JOB_DATA = d.jobs || [];
       localStorage.setItem(CACHE_KEY, JSON.stringify(JOB_DATA));
       localStorage.setItem(CACHE_TIME, String(Date.now()));
-      setSyncBar("ok", "求人" + JOB_DATA.length + "件 — 更新完了 (" + new Date().toLocaleTimeString("ja-JP") + ")");
+      setSyncBar("ok", "求人" + JOB_DATA.length + "件 (" + new Date().toLocaleTimeString("ja-JP") + ")");
       return JOB_DATA;
     })
-    .catch(function(e){
+    .catch(function() {
       if (cached) {
         JOB_DATA = JSON.parse(cached);
-        setSyncBar("error", "⚠️ 最新取得失敗。キャッシュ使用中 (" + JOB_DATA.length + "件)");
+        setSyncBar("error", "⚠️ キャッシュ使用中 (" + JOB_DATA.length + "件)");
       } else {
         JOB_DATA = sampleJobs();
-        setSyncBar("error", "⚠️ データ取得エラー。サンプルを表示中");
+        setSyncBar("error", "⚠️ サンプルデータを表示中");
       }
       return JOB_DATA;
     });
@@ -133,41 +129,73 @@ function setSyncBar(state, text) {
     state === "ok" ? "求人 " + JOB_DATA.length + "件" : "—";
 }
 
-/* ===== AI呼び出し（Wixバックエンド経由） ===== */
+/* ===== ユーザー希望に合う求人を絞り込む（ローカル処理） ===== */
+function filterJobs(userMessage) {
+  var msg = userMessage.toLowerCase();
+  var results = JOB_DATA.filter(function(j) {
+    var text = [j.title, j.company, j.area, j.pref, j.city, j.station,
+                j.jobType, j.employment, j.features, j.genre].join(" ").toLowerCase();
+    var words = msg.replace(/[。、！？]/g, " ").split(/\s+/).filter(Boolean);
+    return words.some(function(w) { return w.length >= 2 && text.indexOf(w) >= 0; });
+  });
+  // マッチしなければランダムで返す
+  if (results.length === 0) results = JOB_DATA.slice(0, 20);
+  return results.slice(0, 20);
+}
+
+/* ===== AI呼び出し（絞り込み済みデータのみ送信） ===== */
 function callAI(userMessage) {
-  var system = "あなたはペコリッチ（飲食業界専門求人サイト）の求人検索AIアシスタントです。\n"
-    + "求職者の希望条件を聞き取り、下記の求人データから最適な求人を提案してください。\n\n"
-    + "【求人データ（最大80件）】\n"
-    + JSON.stringify(JOB_DATA.slice(0, 80), null, 2) + "\n\n"
-    + "【ルール】\n"
-    + "1. エリア・職種・雇用形態・給与・シフト等の希望を把握する\n"
-    + "2. 条件に合う求人を最大3件ピックアップしてJSONで返す\n"
-    + "3. 条件が不明な場合は1つだけ質問して絞り込む\n"
-    + "4. 必ず以下のJSON形式のみで返す（前後に文字を追加しない）:\n\n"
-    + '{"message":"AIからのメッセージ（200字以内）","jobs":[{"id":"","title":"","company":"","area":"","jobType":"","employment":"","salary":"","features":[],"url":""}],"quickReplies":["","",""]}';
+  var matched = filterJobs(userMessage);
+
+  // 送信データを軽量化（必要最小限のフィールドのみ）
+  var jobList = matched.map(function(j) {
+    return {
+      id:    j.id,
+      title: j.title,
+      company: j.company,
+      area:  j.area || j.pref,
+      jobType: j.jobType,
+      employment: j.employment,
+      salary: j.salaryText,
+      station: j.station,
+      features: j.features,
+      url:   j.applyUrl
+    };
+  });
+
+  var system = "あなたはペコリッチ（飲食業界専門求人サイト）の求人検索AIアシスタントです。"
+    + "求職者の希望に合う求人を以下のデータから最大3件提案してください。\n\n"
+    + "求人データ:\n" + JSON.stringify(jobList) + "\n\n"
+    + "必ず以下のJSON形式のみで返してください（前後に文字を追加しない）:\n"
+    + '{"message":"一言コメント（100字以内）","jobs":[{"id":"","title":"","company":"","area":"","jobType":"","employment":"","salary":"","url":""}],"quickReplies":["選択肢1","選択肢2","選択肢3"]}';
 
   return fetch(AI_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1500,
+      max_tokens: 1000,
       system: system,
       messages: [{ role: "user", content: userMessage }]
     })
   })
-  .then(function(r){ return r.json(); })
-  .then(function(data){
-    var raw = (data.content && data.content[0] && data.content[0].text) || "{}";
+  .then(function(r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  })
+  .then(function(data) {
+    var raw = (data.content && data.content[0] && data.content[0].text) || "";
+    if (!raw) throw new Error("empty response");
+    var clean = raw.replace(/```json|```/g, "").trim();
     try {
-      return JSON.parse(raw.replace(/```json|```/g,"").trim());
+      return JSON.parse(clean);
     } catch(e) {
-      return { message: raw, jobs: [], quickReplies: [] };
+      return { message: raw.slice(0, 200), jobs: [], quickReplies: [] };
     }
   });
 }
 
-/* ===== メッセージ追加 ===== */
+/* ===== メッセージ表示 ===== */
 function appendMsg(role, html) {
   var area = document.getElementById("chat-messages");
   var div  = document.createElement("div");
@@ -186,9 +214,8 @@ function showTyping() {
   return appendMsg("bot", '<div class="typing-dots"><span></span><span></span><span></span></div>');
 }
 
-/* ===== 求人カード ===== */
 function jobCard(job) {
-  var url = job.url || job.applyUrl || "#";
+  var url = job.url || "#";
   return '<div class="job-card" onclick="window.open(\'' + esc(url) + '\',\'_blank\')">'
     + '<div class="job-title">🏪 ' + esc(job.title || job.company || "求人情報") + '</div>'
     + '<div class="job-meta">'
@@ -197,7 +224,7 @@ function jobCard(job) {
     + '</div>'
     + '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">'
     + (job.employment ? '<span class="tag">' + esc(job.employment) + '</span>' : '')
-    + (job.salary || job.salaryText ? '<span class="tag salary">💴 ' + esc(job.salary || job.salaryText) + '</span>' : '')
+    + (job.salary ? '<span class="tag salary">💴 ' + esc(job.salary) + '</span>' : '')
     + '</div>'
     + '<a class="apply-btn" href="' + esc(url) + '" target="_blank" onclick="event.stopPropagation()">応募する →</a>'
     + '</div>';
@@ -206,7 +233,9 @@ function jobCard(job) {
 function quickReplies(replies) {
   if (!replies || !replies.length) return "";
   return '<div class="quick-replies">'
-    + replies.map(function(r){ return '<button class="quick-btn" onclick="sendQuick(\'' + esc(r) + '\')">' + esc(r) + '</button>'; }).join("")
+    + replies.map(function(r) {
+        return '<button class="quick-btn" onclick="sendQuick(\'' + esc(r) + '\')">' + esc(r) + '</button>';
+      }).join("")
     + '</div>';
 }
 
@@ -227,60 +256,65 @@ function sendMessage() {
   input.style.height = "auto";
   appendMsg("user", text);
   var typing = showTyping();
-  callAI(text).then(function(result){
-    typing.remove();
-    var html = "";
-    if (result.message) html += esc(result.message).replace(/\n/g,"<br>");
-    if (result.jobs && result.jobs.length) html += result.jobs.map(jobCard).join("");
-    if (result.quickReplies && result.quickReplies.length) html += quickReplies(result.quickReplies);
-    appendMsg("bot", html || "申し訳ありません。もう少し詳しく教えてください。");
-  }).catch(function(){
-    typing.remove();
-    appendMsg("bot", "⚠️ エラーが発生しました。しばらくしてから再度お試しください。");
-  }).finally(function(){
-    isSending = false;
-    btn.disabled = false;
-    input.focus();
-  });
+
+  callAI(text)
+    .then(function(result) {
+      typing.remove();
+      var html = "";
+      if (result.message) html += esc(result.message).replace(/\n/g, "<br>");
+      if (result.jobs && result.jobs.length) html += result.jobs.map(jobCard).join("");
+      if (result.quickReplies && result.quickReplies.length) html += quickReplies(result.quickReplies);
+      appendMsg("bot", html || "条件に合う求人が見つかりませんでした。別の条件で試してみてください。");
+    })
+    .catch(function(e) {
+      typing.remove();
+      appendMsg("bot", "⚠️ エラーが発生しました。しばらくしてから再度お試しください。");
+      console.error("callAI error:", e);
+    })
+    .finally(function() {
+      isSending = false;
+      btn.disabled = false;
+      input.focus();
+    });
 }
 
 /* ===== ウェルカム ===== */
 function showWelcome() {
   var html = "こんにちは！🍳<br><strong>ペコリッチ</strong>の求人AIアシスタントです。<br><br>"
     + "希望のお仕事を自由に教えてください。<br>エリア・職種・給与・シフトなど、なんでもOKです！"
-    + quickReplies(["🗺️ エリアから探す","👔 職種から探す","💴 給与で絞り込む","🕐 シフト重視で探す"]);
+    + quickReplies(["🗺️ エリアから探す", "👔 職種から探す", "💴 給与で絞り込む", "🕐 シフト重視で探す"]);
   appendMsg("bot", html);
 }
 
 function esc(s) {
   return String(s)
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
-/* ===== サンプルデータ ===== */
 function sampleJobs() {
   return [
-    {id:"1",title:"ホールスタッフ（正社員）",company:"イタリアンレストラン 渋谷店",area:"東京・渋谷",jobType:"ホールスタッフ",employment:"正社員",salaryText:"月給22〜28万円",features:["週休2日","未経験OK"],url:""},
-    {id:"2",title:"調理補助スタッフ",company:"和食居酒屋 新宿店",area:"東京・新宿",jobType:"キッチン",employment:"アルバイト",salaryText:"時給1,200〜1,400円",features:["シフト自由","まかない付"],url:""},
+    {id:"1",title:"ホールスタッフ（正社員）",company:"イタリアンレストラン 渋谷店",area:"東京・渋谷",jobType:"ホールスタッフ",employment:"正社員",salaryText:"月給22〜28万円",applyUrl:""},
+    {id:"2",title:"調理補助スタッフ",company:"和食居酒屋 新宿店",area:"東京・新宿",jobType:"キッチン",employment:"アルバイト",salaryText:"時給1,200〜1,400円",applyUrl:""},
   ];
 }
 
 /* ===== 初期化 ===== */
-document.getElementById("chat-input").addEventListener("input", function(){
+document.getElementById("chat-input").addEventListener("input", function() {
   this.style.height = "auto";
   this.style.height = Math.min(this.scrollHeight, 80) + "px";
 });
-document.getElementById("chat-input").addEventListener("keydown", function(e){
+document.getElementById("chat-input").addEventListener("keydown", function(e) {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 document.getElementById("send-btn").addEventListener("click", sendMessage);
 
-fetchJobs(false).then(function(){
+fetchJobs(false).then(function() {
   document.getElementById("loading-screen").style.display = "none";
   document.getElementById("chat-wrap").style.display = "flex";
   document.getElementById("send-btn").disabled = false;
   showWelcome();
-  setInterval(function(){ fetchJobs(true); }, CACHE_MIN * 60 * 1000);
+  setInterval(function() { fetchJobs(true); }, CACHE_MIN * 60 * 1000);
 });
 </script>
 </body>
