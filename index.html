@@ -79,7 +79,8 @@ html,body{height:100%;font-family:'Noto Sans JP',sans-serif;background:var(--bg)
 </div>
 <script>
 /* ===== 設定 ===== */
-var WIXBASE    = "https://www.jointlab.jp/_functions";
+var AI_ENDPOINT = "https://lively-math-3076.talkingbookmeister.workers.dev";
+var WIXBASE     = "https://www.jointlab.jp/_functions";
 var CACHE_KEY  = "pecorich_jobs_cache";
 var CACHE_TIME = "pecorich_jobs_time";
 var CACHE_MIN  = 60;
@@ -145,7 +146,7 @@ function callAI(userMessage) {
     + "4. 必ず以下のJSON形式のみで返す（前後に文字を追加しない）:\n\n"
     + '{"message":"AIからのメッセージ（200字以内）","jobs":[{"id":"","title":"","company":"","area":"","jobType":"","employment":"","salary":"","features":[],"url":""}],"quickReplies":["","",""]}';
 
-  return fetch(WIXBASE + "/askAI", {
+  return fetch(AI_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
