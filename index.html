@@ -261,7 +261,7 @@ html,body{height:100%;font-family:'Noto Sans JP',sans-serif;background:var(--bg)
   </div>
   <div id="sync-bar">🔄 <span id="sync-msg">求人データを確認中…</span></div>
   <div id="chat-messages"></div>
-  <div id="chat-input-area">
+  <div id="chat-input-area" style="display:none;">
     <textarea id="chat-input" placeholder="例：渋谷でホールスタッフを探しています" rows="1"></textarea>
     <button id="send-btn" disabled>
       <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -270,6 +270,10 @@ html,body{height:100%;font-family:'Noto Sans JP',sans-serif;background:var(--bg)
 </div>
 
 <script>
+/* =====================================================
+   ペコリッチ AI相談チャット v7
+   フロー：エリア→雇用形態→職種→検索→（多い場合は絞り込み）→結果→面談
+===================================================== */
 var AI_ENDPOINT   = "https://lively-math-3076.talkingbookmeister.workers.dev";
 var WIXBASE        = "https://www.jointlab.jp/_functions";
 var CACHE_KEY      = "pecorich_jobs_cache";
@@ -278,35 +282,32 @@ var CACHE_MIN      = 60;
 var JOB_DATA       = [];
 var isSending      = false;
 var CONSULT_URL    = "https://my.pecorich.jp/consultation";
-var REGISTER_URL   = "https://my.pecorich.jp/register";
 var SEARCH_BASE    = "https://pecorich.jp/search/";
+var REFINE_THRESHOLD = 15; // これ以上の件数で絞り込み質問を表示
 
-// ======== 選択状態（すべて配列で管理） ========
+// 選択状態（すべて配列管理）
 var SEL = {
-  regions:    [],   // 地方
-  prefs:      [],   // 都道府県
-  cities:     [],   // 市区町村
-  stations:   [],   // 駅
-  employment: [],   // 雇用形態
-  jobTypes:   [],   // 職種
-  salary:     "",   // 給与（単一選択）
-  shifts:     [],   // シフト
-  features:   []    // こだわり条件
+  prefs:[], cities:[], stations:[],
+  employment:[], jobTypes:[],
+  genres:[], shifts:[], features:[]
 };
 
-var QUESTION_STEPS = ["area","employment","jobType","salary","shift"];
-var currentStep    = 0;
-var STAGE          = "questioning";
-var areaSubStep    = "region"; // region→pref→area_choice→city or station
+// フロー管理
+var FLOW_STEP = 0;
+// 0=area, 1=employment, 2=jobType → search
+// 3=refine_genre, 4=refine_shift, 5=refine_feature, 6=refine_salary → final search
+var STAGE = "questioning"; // questioning → results → afterresults
+var areaSubStep = "region";
+var selectedRegions = [];
 
-// ======== ペコリッチ公式カテゴリー ========
+// ===== ペコリッチ公式カテゴリー =====
 var REGION_DATA = {
-  "北海道・東北": { icon:"🏔️", prefs:["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県"] },
-  "関東":        { icon:"🗼", prefs:["東京都","神奈川県","千葉県","埼玉県","茨城県","栃木県","群馬県"] },
-  "中部":        { icon:"🗻", prefs:["愛知県","静岡県","岐阜県","三重県","長野県","山梨県","新潟県","富山県","石川県","福井県"] },
-  "近畿":        { icon:"🏯", prefs:["大阪府","兵庫県","京都府","滋賀県","奈良県","和歌山県"] },
-  "中国・四国":  { icon:"⛩️", prefs:["広島県","岡山県","鳥取県","島根県","山口県","徳島県","香川県","愛媛県","高知県"] },
-  "九州・沖縄":  { icon:"🌺", prefs:["福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"] }
+  "北海道・東北": {icon:"🏔️", prefs:["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県"]},
+  "関東":        {icon:"🗼", prefs:["東京都","神奈川県","千葉県","埼玉県","茨城県","栃木県","群馬県"]},
+  "中部":        {icon:"🗻", prefs:["愛知県","静岡県","岐阜県","三重県","長野県","山梨県","新潟県","富山県","石川県","福井県"]},
+  "近畿":        {icon:"🏯", prefs:["大阪府","兵庫県","京都府","滋賀県","奈良県","和歌山県"]},
+  "中国・四国":  {icon:"⛩️", prefs:["広島県","岡山県","鳥取県","島根県","山口県","徳島県","香川県","愛媛県","高知県"]},
+  "九州・沖縄":  {icon:"🌺", prefs:["福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"]}
 };
 
 var PREF_CODE = {
@@ -322,16 +323,19 @@ var PREF_CODE = {
   "鹿児島県":"46","沖縄県":"47"
 };
 
-// ペコリッチ公式・職種
-var JOB_CATEGORIES = [
+var EMPLOY_LIST = [
+  {code:"rs", name:"正社員"},
+  {code:"pt", name:"アルバイト・パート"},
+  {code:"fr", name:"業務委託"}
+];
+
+var JOB_LIST = [
   {code:"job001",name:"サービス・ホール"},
   {code:"job002",name:"キッチン・調理"},
   {code:"job003",name:"デリバリー・配達"},
   {code:"job004",name:"販売・レジ"},
   {code:"job005",name:"洗い場・清掃"},
   {code:"job006",name:"バーテンダー"},
-  {code:"job007",name:"本部スタッフ"},
-  {code:"job008",name:"その他の職種"},
   {code:"job009",name:"製造・仕込み"},
   {code:"job010",name:"パティシエ"},
   {code:"job011",name:"ソムリエ"},
@@ -340,46 +344,52 @@ var JOB_CATEGORIES = [
   {code:"job014",name:"店長候補"},
   {code:"job015",name:"料理長・シェフ・板長候補"},
   {code:"job016",name:"SV・マネージャー候補"},
-  {code:"job017",name:"ウェディングプランナー"},
   {code:"job018",name:"板前・寿司職人"},
-  {code:"job019",name:"精肉加工"},
   {code:"job020",name:"ホール・キッチン兼務"},
-  {code:"job021",name:"仕入れ・バイヤー"}
+  {code:"job007",name:"本部スタッフ"},
+  {code:"job008",name:"その他の職種"}
 ];
 
-// ペコリッチ公式・雇用形態
-var EMPLOY_CATEGORIES = [
-  {code:"rs", name:"正社員"},
-  {code:"pt", name:"アルバイト・パート"},
-  {code:"fr", name:"業務委託"}
+// ジャンル（業態）
+var GENRE_LIST = [
+  {code:"g01",name:"居酒屋・ダイニングバー"},
+  {code:"g02",name:"焼肉・ステーキ"},
+  {code:"g03",name:"ラーメン・麺類"},
+  {code:"g04",name:"寿司・和食"},
+  {code:"g05",name:"イタリアン・フレンチ"},
+  {code:"g06",name:"カフェ・喫茶店"},
+  {code:"g07",name:"ファストフード・ファミレス"},
+  {code:"g08",name:"焼き鳥・串焼き"},
+  {code:"g09",name:"中華料理"},
+  {code:"g10",name:"アジアン料理"},
+  {code:"g11",name:"バー・クラブ"},
+  {code:"g12",name:"ホテル・レストラン"},
+  {code:"g13",name:"給食・社員食堂"},
+  {code:"g14",name:"デリ・惣菜"},
+  {code:"g00",name:"こだわらない"}
 ];
 
-// ペコリッチ公式・シフト
-var SHIFT_CATEGORIES = [
+var SHIFT_LIST = [
   {code:"shift001",name:"平日のみOK"},
   {code:"shift002",name:"土日のみOK"},
   {code:"shift003",name:"早朝・朝の仕事"},
   {code:"shift004",name:"深夜勤務"},
   {code:"shift005",name:"シフト自己申告"},
-  {code:"shift006",name:"短期・期間限定"},
   {code:"shift007",name:"ランチのみ"},
   {code:"shift008",name:"ディナーのみ"},
   {code:"shift009",name:"週2日以内"},
   {code:"shift010",name:"週3日以内"},
   {code:"shift011",name:"週4日以上"},
-  {code:"shift012",name:"22時までの勤務OK"},
   {code:"shift014",name:"週1日以上"},
-  {code:"shift015",name:"日雇い・単発"},
   {code:"shift016",name:"即日勤務可"},
-  {code:"shift017",name:"月8日以上休み"},
   {code:"shift018",name:"週休2日"},
   {code:"shift019",name:"完全週休２日制"},
   {code:"shift022",name:"時短勤務"},
-  {code:"shift023",name:"残業なし"}
+  {code:"shift023",name:"残業なし"},
+  {code:"shift000",name:"こだわらない"}
 ];
 
-// ペコリッチ公式・こだわり条件
-var FEATURE_CATEGORIES = [
+var FEATURE_LIST = [
   {code:"gf001",name:"資格取得支援"},
   {code:"gf003",name:"接客が身に付く"},
   {code:"gf004",name:"社員登用あり"},
@@ -390,138 +400,156 @@ var FEATURE_CATEGORIES = [
   {code:"gf014",name:"高校生活躍中"},
   {code:"gf015",name:"大学生活躍中"},
   {code:"gf016",name:"主婦・主夫活躍中"},
-  {code:"gf017",name:"女性活躍中"}
+  {code:"gf017",name:"女性活躍中"},
+  {code:"gf000",name:"こだわらない"}
 ];
 
-// 市区町村データ
+// 市区町村データ（主要都道府県）
 var CITY_DATA = {
-  "東京都": ["千代田区","中央区","港区","新宿区","文京区","台東区","墨田区","江東区","品川区","目黒区","大田区","世田谷区","渋谷区","中野区","杉並区","豊島区","北区","荒川区","板橋区","練馬区","足立区","葛飾区","江戸川区","八王子市","立川市","その他"],
-  "神奈川県":["横浜市西区","横浜市中区","横浜市神奈川区","横浜市港北区","川崎市川崎区","川崎市中原区","相模原市","横須賀市","藤沢市","鎌倉市","その他"],
-  "大阪府": ["大阪市北区","大阪市中央区","大阪市西区","大阪市浪速区","大阪市天王寺区","大阪市淀川区","堺市","豊中市","吹田市","高槻市","東大阪市","その他"],
-  "愛知県": ["名古屋市中区","名古屋市中村区","名古屋市東区","名古屋市千種区","名古屋市熱田区","豊橋市","岡崎市","一宮市","その他"],
-  "兵庫県": ["神戸市中央区","神戸市兵庫区","神戸市灘区","尼崎市","西宮市","姫路市","その他"],
-  "京都府": ["京都市中京区","京都市下京区","京都市上京区","京都市左京区","宇治市","その他"],
-  "福岡県": ["福岡市博多区","福岡市中央区","福岡市西区","福岡市東区","北九州市","久留米市","その他"],
-  "北海道": ["札幌市中央区","札幌市北区","札幌市西区","札幌市東区","函館市","旭川市","その他"],
-  "宮城県": ["仙台市青葉区","仙台市宮城野区","仙台市泉区","その他"],
+  "東京都":["千代田区","中央区","港区","新宿区","文京区","台東区","墨田区","江東区","品川区","目黒区","大田区","世田谷区","渋谷区","中野区","杉並区","豊島区","北区","荒川区","板橋区","練馬区","足立区","葛飾区","江戸川区","八王子市","立川市","武蔵野市","三鷹市","府中市","調布市","町田市","西東京市","その他"],
+  "神奈川県":["横浜市西区","横浜市中区","横浜市南区","横浜市港北区","横浜市鶴見区","横浜市神奈川区","横浜市保土ケ谷区","横浜市金沢区","川崎市川崎区","川崎市幸区","川崎市中原区","川崎市高津区","相模原市中央区","横須賀市","平塚市","鎌倉市","藤沢市","小田原市","茅ヶ崎市","厚木市","大和市","その他"],
+  "大阪府":["大阪市北区","大阪市中央区","大阪市西区","大阪市浪速区","大阪市天王寺区","大阪市淀川区","大阪市福島区","大阪市此花区","大阪市西成区","大阪市住吉区","大阪市平野区","大阪市城東区","堺市堺区","堺市北区","豊中市","吹田市","高槻市","枚方市","東大阪市","その他"],
+  "愛知県":["名古屋市中区","名古屋市中村区","名古屋市東区","名古屋市千種区","名古屋市熱田区","名古屋市瑞穂区","名古屋市昭和区","名古屋市天白区","名古屋市港区","名古屋市南区","豊橋市","岡崎市","一宮市","春日井市","豊田市","その他"],
+  "兵庫県":["神戸市中央区","神戸市兵庫区","神戸市灘区","神戸市東灘区","神戸市長田区","尼崎市","西宮市","芦屋市","伊丹市","宝塚市","姫路市","明石市","その他"],
+  "京都府":["京都市中京区","京都市下京区","京都市上京区","京都市左京区","京都市東山区","京都市伏見区","京都市右京区","京都市西京区","宇治市","長岡京市","その他"],
+  "埼玉県":["さいたま市大宮区","さいたま市浦和区","さいたま市中央区","川越市","熊谷市","川口市","所沢市","春日部市","越谷市","草加市","その他"],
+  "千葉県":["千葉市中央区","千葉市花見川区","船橋市","松戸市","柏市","市川市","流山市","浦安市","習志野市","その他"],
+  "福岡県":["福岡市博多区","福岡市中央区","福岡市西区","福岡市東区","福岡市南区","福岡市早良区","北九州市小倉北区","北九州市戸畑区","久留米市","大牟田市","その他"],
+  "北海道":["札幌市中央区","札幌市北区","札幌市東区","札幌市白石区","札幌市豊平区","札幌市西区","札幌市手稲区","函館市","旭川市","釧路市","その他"],
+  "宮城県":["仙台市青葉区","仙台市宮城野区","仙台市泉区","仙台市若林区","仙台市太白区","石巻市","大崎市","その他"],
+  "広島県":["広島市中区","広島市西区","広島市東区","広島市南区","広島市安佐南区","福山市","尾道市","その他"],
   "DEFAULT":["中心市街地","郊外エリア","その他"]
 };
 
 // 沿線・駅データ
 var LINE_DATA = {
-  "東京都": {
-    "JR山手線":        ["東京","有楽町","新橋","浜松町","田町","品川","大崎","五反田","目黒","恵比寿","渋谷","原宿","代々木","新宿","池袋","上野","秋葉原","神田"],
-    "JR中央線":        ["東京","神田","御茶ノ水","四ツ谷","新宿","中野","高円寺","荻窪","吉祥寺","三鷹","立川","八王子"],
-    "JR総武線":        ["錦糸町","亀戸","平井","新小岩","小岩","市川","船橋","千葉"],
-    "東京メトロ銀座線": ["浅草","上野","銀座","新橋","虎ノ門","渋谷","表参道","青山一丁目"],
-    "東京メトロ丸ノ内線":["池袋","後楽園","御茶ノ水","銀座","霞ケ関","新宿","西新宿"],
+  "東京都":{
+    "JR山手線":["東京","有楽町","新橋","浜松町","田町","品川","大崎","五反田","目黒","恵比寿","渋谷","原宿","代々木","新宿","池袋","巣鴨","上野","秋葉原","神田"],
+    "JR中央線":["東京","神田","御茶ノ水","四ツ谷","新宿","中野","荻窪","吉祥寺","三鷹","立川","八王子"],
+    "JR総武線":["錦糸町","亀戸","新小岩","小岩","市川","船橋","千葉"],
+    "JR京浜東北線":["大宮","浦和","赤羽","田端","上野","秋葉原","東京","有楽町","浜松町","品川","川崎","横浜"],
+    "東京メトロ銀座線":["浅草","上野","銀座","新橋","虎ノ門","渋谷","表参道"],
+    "東京メトロ丸ノ内線":["池袋","後楽園","大手町","銀座","霞ケ関","新宿"],
     "東京メトロ日比谷線":["中目黒","恵比寿","六本木","銀座","秋葉原","上野","北千住"],
-    "小田急線":        ["新宿","下北沢","成城学園前","登戸","新百合ヶ丘","町田"],
-    "東急東横線":      ["渋谷","中目黒","代官山","自由が丘","武蔵小杉","横浜"],
-    "東急世田谷線":    ["三軒茶屋","経堂","等々力","二子玉川"],
-    "京王線":          ["新宿","明大前","下高井戸","調布","府中","八王子"]
+    "東京メトロ副都心線":["和光市","池袋","新宿三丁目","渋谷","横浜"],
+    "小田急線":["新宿","下北沢","成城学園前","登戸","新百合ヶ丘","町田"],
+    "東急東横線":["渋谷","中目黒","代官山","自由が丘","武蔵小杉","横浜"],
+    "東急田園都市線":["渋谷","三軒茶屋","二子玉川","溝の口","たまプラーザ","中央林間"],
+    "京王線":["新宿","笹塚","明大前","千歳烏山","調布","府中","八王子"]
   },
-  "神奈川県": {
-    "JR東海道線":      ["横浜","戸塚","大船","藤沢","辻堂","茅ヶ崎","平塚","小田原"],
-    "JR横浜線":        ["東神奈川","新横浜","町田","相模原"],
-    "東急東横線":      ["横浜","反町","菊名","綱島","日吉","武蔵小杉"],
-    "横浜市営地下鉄":  ["横浜","三ッ沢下町","新横浜","センター北","センター南","上大岡"]
+  "神奈川県":{
+    "JR東海道線":["横浜","戸塚","大船","藤沢","辻堂","茅ヶ崎","平塚","小田原"],
+    "JR横浜線":["東神奈川","新横浜","菊名","長津田","町田","相模原"],
+    "JR京浜東北線":["川崎","鶴見","横浜","桜木町","関内","磯子","大船"],
+    "東急東横線":["武蔵小杉","日吉","綱島","菊名","横浜"],
+    "横浜市営地下鉄ブルーライン":["横浜","戸塚","上大岡","港南中央","新横浜","センター北","センター南","仲町台","あざみ野"],
+    "相鉄本線":["横浜","平沼橋","西横浜","星川","二俣川","大和","海老名"]
   },
-  "大阪府": {
-    "JR大阪環状線":    ["大阪","福島","野田","西九条","弁天町","大正","天王寺","鶴橋","京橋"],
-    "阪急神戸線":      ["梅田","十三","塚口","武庫之荘","西宮北口","夙川"],
-    "御堂筋線":        ["江坂","新大阪","梅田","淀屋橋","本町","心斎橋","なんば","天王寺","なかもず"],
-    "京阪本線":        ["淀屋橋","天満橋","京橋","守口市","門真市"]
+  "大阪府":{
+    "JR大阪環状線":["大阪","福島","野田","西九条","弁天町","大正","天王寺","鶴橋","京橋"],
+    "阪急梅田・神戸線":["梅田","十三","塚口","武庫之荘","西宮北口","夙川"],
+    "御堂筋線":["新大阪","梅田","淀屋橋","本町","心斎橋","なんば","天王寺","なかもず"],
+    "谷町線":["大日","守口","野江内代","天満橋","谷町四丁目","谷町六丁目","天王寺","八尾南"],
+    "堺筋線":["天神橋筋六丁目","南森町","北浜","堺筋本町","長堀橋","恵美須町","天下茶屋"],
+    "京阪本線":["淀屋橋","天満橋","京橋","守口市","門真市","枚方市"]
   },
-  "愛知県": {
-    "名古屋市営地下鉄東山線":["名古屋","伏見","栄","千種","今池","藤が丘"],
+  "愛知県":{
+    "名古屋市営地下鉄東山線":["名古屋","伏見","栄","千種","今池","池下","覚王山","藤が丘"],
     "名古屋市営地下鉄桜通線":["名古屋","国際センター","丸の内","久屋大通","今池","野並"],
-    "JR東海道線":      ["名古屋","熱田","金山","岡崎","豊橋"]
+    "名古屋市営地下鉄名城線":["栄","矢場町","上前津","金山","神宮西","八事","八事日赤"],
+    "JR東海道線":["名古屋","熱田","金山","笠寺","大府","刈谷","安城","岡崎","豊橋"],
+    "名鉄名古屋本線":["名鉄名古屋","栄生","国府宮","岐阜"]
   },
-  "兵庫県": {
-    "JR神戸線":        ["神戸","三ノ宮","住吉","甲子園口","尼崎","西宮"],
-    "阪急神戸線":      ["三宮","春日野道","六甲","岡本","夙川","西宮北口"],
-    "神戸市営地下鉄":  ["新神戸","三宮","大倉山","ハーバーランド","和田岬"]
+  "兵庫県":{
+    "JR神戸線":["神戸","三ノ宮","住吉","芦屋","西宮","甲子園口","尼崎"],
+    "阪急神戸線":["三宮","春日野道","六甲","岡本","夙川","西宮北口","塚口","武庫之荘"],
+    "神戸市営地下鉄":["新神戸","三宮","県庁前","大倉山","ハーバーランド","和田岬"]
   },
-  "福岡県": {
-    "福岡市地下鉄空港線":["姪浜","藤崎","西新","唐人町","大濠公園","天神","中洲川端","博多","貝塚"],
-    "西鉄天神大牟田線": ["西鉄福岡（天神）","薬院","大橋","春日原","二日市","久留米"],
-    "JR鹿児島本線":    ["博多","竹下","南福岡","大野城","二日市"]
+  "京都府":{
+    "JR京都線":["京都","西大路","桂川","向日町","長岡京"],
+    "阪急京都線":["京都河原町","烏丸","大宮","桂","長岡天神","高槻市","茨木市"],
+    "京都市営地下鉄烏丸線":["国際会館","北山","北大路","烏丸御池","四条","京都","竹田"],
+    "京都市営地下鉄東西線":["太秦天神川","二条","烏丸御池","東山","三条京阪","山科"]
   },
-  "北海道": {
-    "札幌市営地下鉄東西線":["新さっぽろ","大谷地","南郷18丁目","菊水","大通","西18丁目","発寒南"],
-    "JR函館本線":      ["札幌","桑園","苗穂","手稲","琴似"]
+  "埼玉県":{
+    "JR京浜東北線・埼京線":["大宮","浦和","川口","赤羽","板橋","十条","池袋"],
+    "東武東上線":["池袋","成増","和光市","志木","川越"],
+    "西武池袋線":["池袋","練馬","所沢","入間市"],
+    "JR武蔵野線":["武蔵浦和","南浦和","越谷","吉川","新松戸"]
   },
-  "DEFAULT": {
-    "主要路線": ["中心駅","ターミナル駅","主要乗換駅","その他"]
-  }
+  "千葉県":{
+    "JR総武線":["市川","本八幡","船橋","津田沼","千葉"],
+    "JR京葉線":["八丁堀","新木場","浦安","新浦安","海浜幕張","千葉みなと"],
+    "東武野田線":["春日部","柏","野田市","流山おおたかの森"],
+    "京成線":["日暮里","青砥","船橋","成田"]
+  },
+  "福岡県":{
+    "福岡市地下鉄空港線":["姪浜","藤崎","西新","唐人町","大濠公園","天神","中洲川端","祇園","博多","東比恵","貝塚"],
+    "福岡市地下鉄七隈線":["橋本","六本松","薬院","渡辺通","天神南","博多"],
+    "西鉄天神大牟田線":["西鉄福岡（天神）","薬院","大橋","春日原","二日市","久留米"],
+    "JR鹿児島本線":["博多","竹下","南福岡","春日","大野城","二日市"]
+  },
+  "北海道":{
+    "札幌市営地下鉄東西線":["新さっぽろ","白石","菊水","大通","西18丁目","宮の沢"],
+    "札幌市営地下鉄南北線":["麻生","北34条","北24条","北18条","北12条","さっぽろ","大通","すすきの","中島公園","澄川","真駒内"],
+    "JR函館本線":["札幌","桑園","苗穂","白石","厚別","新札幌"]
+  },
+  "DEFAULT":{"主要路線":["中心駅","ターミナル駅","主要乗換駅","その他"]}
 };
 
-var STEP_CONFIG = {
-  employment: { question:"アルバイトと正社員、どちらをお考えですか？💼（複数選択可）" },
-  jobType:    { question:"ご希望の職種を教えてください👔（複数選択可）" },
-  salary:     { question:"給与の希望はありますか？💴" },
-  shift:      { question:"シフトや働き方の希望はありますか？🕐（複数選択可）" }
-};
-
-// ======== チェックボックスUI共通 ========
+// ===== UIスタイル定数 =====
 var S = {
-  chip:    'display:inline-flex;align-items:center;cursor:pointer;padding:7px 12px;border:1.5px solid #E5DDD0;border-radius:20px;background:#FFF;font-size:12.5px;margin:3px;transition:all 0.1s;',
-  chipOn:  'border-color:#E8621A;background:#FFF0E8;color:#E8621A;font-weight:600;',
-  row:     'display:flex;align-items:center;gap:8px;cursor:pointer;padding:9px 12px;border:1.5px solid #E5DDD0;border-radius:10px;background:#FFF;font-size:13px;margin-bottom:5px;',
-  rowOn:   'border-color:#E8621A;background:#FFF0E8;',
-  btnP:    'padding:10px 16px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;border:none;background:#E8621A;color:white;',
-  btnB:    'padding:10px 14px;border-radius:10px;font-size:12px;cursor:pointer;background:#F5F0E8;color:#666;border:1px solid #ddd;',
-  btnS:    'padding:10px 14px;border-radius:10px;font-size:12px;cursor:pointer;background:#F5F0E8;color:#E8621A;border:1.5px solid #E8621A;'
+  chip:   'display:inline-flex;align-items:center;cursor:pointer;padding:7px 12px;border:1.5px solid #E5DDD0;border-radius:20px;background:#FFF;font-size:12.5px;margin:3px;',
+  chipOn: 'border-color:#E8621A;background:#FFF0E8;color:#E8621A;font-weight:600;',
+  row:    'display:flex;align-items:center;gap:8px;cursor:pointer;padding:9px 12px;border:1.5px solid #E5DDD0;border-radius:10px;background:#FFF;font-size:13px;margin-bottom:5px;',
+  rowOn:  'border-color:#E8621A;background:#FFF0E8;',
+  btnP:   'padding:10px 16px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;border:none;background:#E8621A;color:white;',
+  btnB:   'padding:10px 14px;border-radius:10px;font-size:12px;cursor:pointer;background:#F5F0E8;color:#666;border:1px solid #ddd;',
+  btnS:   'padding:10px 14px;border-radius:10px;font-size:12px;cursor:pointer;background:#FFF0E8;color:#E8621A;border:1.5px solid #E8621A;'
 };
 
-function makeChip(val, label, group) {
-  return '<label id="chip-'+group+'-'+esc(val)+'" style="'+S.chip+'" onclick="toggleChip(this,\''+group+'\')"><input type="checkbox" value="'+esc(val)+'" style="display:none">'+esc(label)+'</label>';
+function chip(val, label, group) {
+  return '<label data-val="'+esc(val)+'" data-group="'+group+'" style="'+S.chip+'" onclick="toggleChip(this)">'
+    +'<input type="checkbox" value="'+esc(val)+'" style="display:none">'+esc(label)+'</label>';
 }
-
-function toggleChip(el, group) {
+function toggleChip(el) {
   var cb = el.querySelector('input');
   cb.checked = !cb.checked;
   el.style.cssText = S.chip + (cb.checked ? S.chipOn : '');
-  updateSelectionCount(group);
 }
-
 function toggleRow(el) {
   var cb = el.querySelector('input');
   cb.checked = !cb.checked;
   el.style.cssText = S.row + (cb.checked ? S.rowOn : '');
 }
-
-function getCheckedFrom(containerId) {
-  var el = document.getElementById(containerId);
+function getCheckedFrom(id) {
+  var el = document.getElementById(id);
   if (!el) return [];
-  var result = [];
-  el.querySelectorAll('input[type=checkbox]:checked').forEach(function(c){ result.push(c.value); });
-  return result;
+  var r = [];
+  el.querySelectorAll('input[type=checkbox]:checked').forEach(function(c){ r.push(c.value); });
+  return r;
+}
+function updateLastBotBubble(html) {
+  var b = document.querySelectorAll('.msg.bot .bubble');
+  if (b.length) { b[b.length-1].innerHTML = html; scrollBottom(); }
+}
+function scrollBottom() {
+  var a = document.getElementById('chat-messages');
+  if (a) a.scrollTop = a.scrollHeight;
 }
 
-function updateSelectionCount(group) {
-  var el = document.getElementById('count-'+group);
-  if (!el) return;
-  var bubbles = document.querySelectorAll('.msg.bot .bubble');
-  if (!bubbles.length) return;
-  var last = bubbles[bubbles.length-1];
-  var chips = last.querySelectorAll('input[type=checkbox]:checked');
-  el.textContent = chips.length > 0 ? chips.length + '件選択中' : '';
-}
-
-// ======== STEP1: 地方選択 ========
+// ===== エリア選択UI =====
 function renderRegionSelector() {
-  var html = '<div style="font-size:11px;color:#999;margin-bottom:6px;">STEP 1 / 5</div>'
+  var html = '<div style="font-size:11px;color:#999;margin-bottom:6px;">STEP 1 / 3　エリア選択</div>'
     +'<div style="font-weight:700;margin-bottom:6px;">お探しのエリアを選んでください🗺️</div>'
     +'<div style="font-size:11px;color:#aaa;margin-bottom:8px;">複数選択できます</div>'
     +'<div id="region-list">';
-  Object.keys(REGION_DATA).forEach(function(r){
+  Object.keys(REGION_DATA).forEach(function(r) {
     html += '<label style="'+S.row+'" onclick="toggleRow(this)">'
       +'<input type="checkbox" value="'+r+'" style="display:none">'
-      +'<span style="font-size:18px;">'+REGION_DATA[r].icon+'</span>'
-      +'<span style="flex:1;">'+r+'</span>'
-      +'<span style="font-size:11px;color:#aaa;">'+REGION_DATA[r].prefs.slice(0,3).join('・')+'…</span>'
+      +'<span style="font-size:17px;">'+REGION_DATA[r].icon+'</span>'
+      +'<span style="flex:1;font-weight:500;">'+r+'</span>'
+      +'<span style="font-size:11px;color:#bbb;">'+REGION_DATA[r].prefs.slice(0,3).join('・')+'…</span>'
       +'</label>';
   });
   html += '</div><button onclick="confirmRegions()" style="'+S.btnP+'width:100%;margin-top:8px;">次へ（都道府県を選ぶ）→</button>';
@@ -531,40 +559,35 @@ function renderRegionSelector() {
 function confirmRegions() {
   var regs = getCheckedFrom('region-list');
   if (!regs.length) { alert('地方を1つ以上選んでください'); return; }
-  SEL.regions = regs;
-  areaSubStep = 'pref';
+  selectedRegions = regs;
   updateLastBotBubble(renderPrefSelector());
 }
 
-// ======== STEP1-2: 都道府県選択 ========
 function renderPrefSelector() {
   var prefs = [];
-  SEL.regions.forEach(function(r){ if (REGION_DATA[r]) prefs = prefs.concat(REGION_DATA[r].prefs); });
+  selectedRegions.forEach(function(r){ if(REGION_DATA[r]) prefs = prefs.concat(REGION_DATA[r].prefs); });
   var html = '<div style="font-weight:700;margin-bottom:6px;">都道府県を選んでください</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます　<span id="count-pref" style="color:#E8621A;font-weight:700;"></span></div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
     +'<div id="pref-list" style="display:flex;flex-wrap:wrap;">';
-  prefs.forEach(function(p){ html += makeChip(p, p, 'pref'); });
-  html += '</div>'
-    +'<div style="display:flex;gap:6px;margin-top:10px;">'
+  prefs.forEach(function(p){ html += chip(p, p, 'pref'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
     +'<button onclick="backToRegion()" style="'+S.btnB+'">← 戻る</button>'
     +'<button onclick="confirmPrefs()" style="'+S.btnP+'flex:1;">次へ（エリアを絞る）→</button>'
     +'</div>';
   return html;
 }
 
-function backToRegion() { areaSubStep='region'; updateLastBotBubble(renderRegionSelector()); }
+function backToRegion() { updateLastBotBubble(renderRegionSelector()); }
 
 function confirmPrefs() {
   var prefs = getCheckedFrom('pref-list');
   if (!prefs.length) { alert('都道府県を1つ以上選んでください'); return; }
   SEL.prefs = prefs;
-  areaSubStep = 'area_choice';
   updateLastBotBubble(renderAreaChoiceSelector());
 }
 
-// ======== STEP1-3: 市区町村 or 沿線・駅 選択 ========
 function renderAreaChoiceSelector() {
-  return '<div style="font-weight:700;margin-bottom:8px;">どちらで絞り込みますか？</div>'
+  return '<div style="font-weight:700;margin-bottom:8px;">さらに絞り込む方法を選んでください</div>'
     +'<div style="display:flex;gap:8px;margin-bottom:8px;">'
     +'<button onclick="goCity()" style="flex:1;padding:14px 10px;border-radius:12px;background:#FFF;border:2px solid #E8621A;color:#E8621A;font-size:13px;font-weight:700;cursor:pointer;">🏙️ 市区町村から選ぶ</button>'
     +'<button onclick="goStation()" style="flex:1;padding:14px 10px;border-radius:12px;background:#FFF;border:2px solid #3D9970;color:#3D9970;font-size:13px;font-weight:700;cursor:pointer;">🚉 沿線・駅から選ぶ</button>'
@@ -575,33 +598,30 @@ function renderAreaChoiceSelector() {
     +'</div>';
 }
 
-function backToPref()    { areaSubStep='pref';       updateLastBotBubble(renderPrefSelector()); }
-function goCity()        { areaSubStep='city';       updateLastBotBubble(renderCitySelector()); }
-function goStation()     { areaSubStep='station';    updateLastBotBubble(renderStationSelector()); }
-function skipAreaDetail(){ SEL.cities=[]; SEL.stations=[]; finalizeArea(); }
+function backToPref()     { updateLastBotBubble(renderPrefSelector()); }
+function goCity()         { updateLastBotBubble(renderCitySelector()); }
+function goStation()      { updateLastBotBubble(renderStationSelector()); }
+function skipAreaDetail() { SEL.cities=[]; SEL.stations=[]; finalizeArea(); }
 
-// ======== STEP1-4a: 市区町村選択 ========
 function renderCitySelector() {
   var cities = [];
   SEL.prefs.forEach(function(p){
     (CITY_DATA[p]||CITY_DATA['DEFAULT']).forEach(function(c){ if(cities.indexOf(c)<0) cities.push(c); });
   });
   var html = '<div style="font-weight:700;margin-bottom:6px;">市区町村を選んでください🏙️</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます　<span id="count-city" style="color:#E8621A;font-weight:700;"></span></div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
     +'<div id="city-list" style="display:flex;flex-wrap:wrap;">';
-  cities.forEach(function(c){ html += makeChip(c, c, 'city'); });
-  html += '</div>'
-    +'<div style="display:flex;gap:6px;margin-top:10px;">'
+  cities.forEach(function(c){ html += chip(c, c, 'city'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
     +'<button onclick="backToAreaChoice()" style="'+S.btnB+'">← 戻る</button>'
     +'<button onclick="confirmCities()" style="'+S.btnP+'flex:1;">エリア確定 ✓</button>'
     +'</div>';
   return html;
 }
 
-function backToAreaChoice() { areaSubStep='area_choice'; updateLastBotBubble(renderAreaChoiceSelector()); }
-function confirmCities() { SEL.cities = getCheckedFrom('city-list'); finalizeArea(); }
+function backToAreaChoice() { updateLastBotBubble(renderAreaChoiceSelector()); }
+function confirmCities()    { SEL.cities = getCheckedFrom('city-list'); finalizeArea(); }
 
-// ======== STEP1-4b: 沿線・駅選択 ========
 function renderStationSelector() {
   var lineMap = {};
   SEL.prefs.forEach(function(p){
@@ -612,17 +632,16 @@ function renderStationSelector() {
     });
   });
   var html = '<div style="font-weight:700;margin-bottom:6px;">沿線・駅を選んでください🚉</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます　<span id="count-station" style="color:#E8621A;font-weight:700;"></span></div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
     +'<div id="station-list">';
   Object.keys(lineMap).forEach(function(line){
     html += '<div style="margin-bottom:10px;">'
-      +'<div style="font-size:11.5px;font-weight:700;color:#666;padding:4px 8px;background:#F5F0E8;border-radius:6px;margin-bottom:4px;">🚃 '+esc(line)+'</div>'
+      +'<div style="font-size:11.5px;font-weight:700;color:#666;padding:3px 8px;background:#F5F0E8;border-radius:6px;margin-bottom:4px;">🚃 '+esc(line)+'</div>'
       +'<div style="display:flex;flex-wrap:wrap;">';
-    lineMap[line].forEach(function(st){ html += makeChip(st, st, 'station'); });
+    lineMap[line].forEach(function(st){ html += chip(st, st, 'station'); });
     html += '</div></div>';
   });
-  html += '</div>'
-    +'<div style="display:flex;gap:6px;margin-top:10px;">'
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
     +'<button onclick="backToAreaChoice()" style="'+S.btnB+'">← 戻る</button>'
     +'<button onclick="skipStation()" style="'+S.btnS+'">スキップ</button>'
     +'<button onclick="confirmStations()" style="'+S.btnP+'flex:1;">エリア確定 ✓</button>'
@@ -630,155 +649,190 @@ function renderStationSelector() {
   return html;
 }
 
-function skipStation()    { SEL.stations = []; finalizeArea(); }
+function skipStation()    { SEL.stations=[]; finalizeArea(); }
 function confirmStations(){ SEL.stations = getCheckedFrom('station-list'); finalizeArea(); }
 
 function finalizeArea() {
   var summary = SEL.prefs.join('・');
-  if (SEL.cities.length)   summary += ' ／ ' + SEL.cities.join('・');
-  if (SEL.stations.length) summary += ' ／ ' + SEL.stations.join('・') + '駅周辺';
+  if (SEL.cities.length)   summary += ' ／ '+SEL.cities.join('・');
+  if (SEL.stations.length) summary += ' ／ '+SEL.stations.join('・')+'駅周辺';
   addUserMsg(summary);
-  currentStep++;
-  askNextQuestion();
+  FLOW_STEP = 1;
+  askFlowStep();
 }
 
-// ======== STEP2: 雇用形態（複数選択） ========
+// ===== 雇用形態選択（STEP2） =====
 function renderEmploymentSelector() {
-  var html = '<div style="font-size:11px;color:#999;margin-bottom:4px;">STEP 2 / 5</div>'
-    +'<div style="font-weight:700;margin-bottom:8px;">'+STEP_CONFIG.employment.question+'</div>'
+  var html = '<div style="font-size:11px;color:#999;margin-bottom:4px;">STEP 2 / 3　雇用形態</div>'
+    +'<div style="font-weight:700;margin-bottom:8px;">アルバイトと正社員、どちらをお考えですか？💼</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
     +'<div id="employ-list" style="display:flex;flex-wrap:wrap;">';
-  EMPLOY_CATEGORIES.forEach(function(e){ html += makeChip(e.code, e.name, 'employ'); });
-  html += '</div>'
-    +'<button onclick="confirmEmployment()" style="'+S.btnP+'width:100%;margin-top:10px;">次へ →</button>';
+  EMPLOY_LIST.forEach(function(e){ html += chip(e.code, e.name, 'employ'); });
+  html += '</div><button onclick="confirmEmployment()" style="'+S.btnP+'width:100%;margin-top:10px;">次へ →</button>';
   return html;
 }
 
 function confirmEmployment() {
-  var codes = getCheckedFrom('employ-list');
-  SEL.employment = codes;
-  var names = codes.map(function(c){ return EMPLOY_CATEGORIES.find(function(e){return e.code===c;}).name; });
+  SEL.employment = getCheckedFrom('employ-list');
+  var names = SEL.employment.map(function(c){ return EMPLOY_LIST.find(function(e){return e.code===c;}).name; });
   addUserMsg(names.length ? names.join('・') : 'こだわらない');
-  currentStep++;
-  askNextQuestion();
+  FLOW_STEP = 2;
+  askFlowStep();
 }
 
-// ======== STEP3: 職種（複数選択） ========
+// ===== 職種選択（STEP3） =====
 function renderJobTypeSelector() {
-  var html = '<div style="font-size:11px;color:#999;margin-bottom:4px;">STEP 3 / 5</div>'
-    +'<div style="font-weight:700;margin-bottom:8px;">'+STEP_CONFIG.jobType.question+'</div>'
+  var html = '<div style="font-size:11px;color:#999;margin-bottom:4px;">STEP 3 / 3　職種</div>'
+    +'<div style="font-weight:700;margin-bottom:8px;">ご希望の職種を教えてください👔</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
     +'<div id="jobtype-list" style="display:flex;flex-wrap:wrap;">';
-  JOB_CATEGORIES.forEach(function(j){ html += makeChip(j.code, j.name, 'jobtype'); });
-  html += '</div>'
-    +'<div style="display:flex;gap:6px;margin-top:10px;">'
+  JOB_LIST.forEach(function(j){ html += chip(j.code, j.name, 'jobtype'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
     +'<button onclick="skipJobType()" style="'+S.btnS+'">こだわらない</button>'
-    +'<button onclick="confirmJobType()" style="'+S.btnP+'flex:1;">次へ →</button>'
+    +'<button onclick="confirmJobType()" style="'+S.btnP+'flex:1;">検索する 🔍</button>'
     +'</div>';
   return html;
 }
 
-function skipJobType()    { SEL.jobTypes=[]; addUserMsg('こだわらない'); currentStep++; askNextQuestion(); }
+function skipJobType()    { SEL.jobTypes=[]; addUserMsg('こだわらない'); runSearch(false); }
 function confirmJobType() {
   var codes = getCheckedFrom('jobtype-list');
   SEL.jobTypes = codes;
-  var names = codes.map(function(c){ return JOB_CATEGORIES.find(function(j){return j.code===c;}).name; });
+  var names = codes.map(function(c){ return JOB_LIST.find(function(j){return j.code===c;}).name; });
   addUserMsg(names.length ? names.join('・') : 'こだわらない');
-  currentStep++;
-  askNextQuestion();
+  runSearch(false);
 }
 
-// ======== STEP4: 給与（単一選択） ========
-function renderSalarySelector() {
-  var salaries = [
-    {val:'時給950円以上', label:'時給 950円以上'},
-    {val:'時給1000円以上', label:'時給 1,000円以上'},
-    {val:'時給1200円以上', label:'時給 1,200円以上'},
-    {val:'時給1500円以上', label:'時給 1,500円以上'},
-    {val:'月給20万円以上', label:'月給 20万円以上'},
-    {val:'月給25万円以上', label:'月給 25万円以上'},
-    {val:'月給30万円以上', label:'月給 30万円以上'}
-  ];
-  var html = '<div style="font-size:11px;color:#999;margin-bottom:4px;">STEP 4 / 5</div>'
-    +'<div style="font-weight:700;margin-bottom:8px;">'+STEP_CONFIG.salary.question+'</div>'
-    +'<div id="salary-list" style="display:flex;flex-wrap:wrap;">';
-  salaries.forEach(function(s){ html += makeChip(s.val, s.label, 'salary'); });
-  html += '</div>'
-    +'<div style="display:flex;gap:6px;margin-top:10px;">'
-    +'<button onclick="skipSalary()" style="'+S.btnS+'">こだわらない</button>'
-    +'<button onclick="confirmSalary()" style="'+S.btnP+'flex:1;">次へ →</button>'
+// ===== 絞り込み質問（結果が多い場合） =====
+function renderGenreSelector() {
+  var html = '<div style="font-size:11px;color:#E8621A;font-weight:700;margin-bottom:6px;">🔍 件数が多いため、さらに絞り込みます</div>'
+    +'<div style="font-weight:700;margin-bottom:8px;">ご希望のジャンル（業態）はありますか？🍽️</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
+    +'<div id="genre-list" style="display:flex;flex-wrap:wrap;">';
+  GENRE_LIST.forEach(function(g){ html += chip(g.code, g.name, 'genre'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+    +'<button onclick="confirmGenre()" style="'+S.btnP+'flex:1;">次へ →</button>'
     +'</div>';
   return html;
 }
 
-function skipSalary()    { SEL.salary=''; addUserMsg('こだわらない'); currentStep++; askNextQuestion(); }
-function confirmSalary() {
-  var vals = getCheckedFrom('salary-list');
-  SEL.salary = vals.length ? vals[vals.length-1] : '';
-  addUserMsg(SEL.salary || 'こだわらない');
-  currentStep++;
-  askNextQuestion();
+function confirmGenre() {
+  var codes = getCheckedFrom('genre-list');
+  if (codes.indexOf('g00') >= 0 || !codes.length) { SEL.genres = []; }
+  else { SEL.genres = codes; }
+  var names = SEL.genres.map(function(c){ return GENRE_LIST.find(function(g){return g.code===c;}).name; });
+  addUserMsg(names.length ? names.join('・') : 'こだわらない');
+  FLOW_STEP = 4;
+  askFlowStep();
 }
 
-// ======== STEP5: シフト・こだわり（複数選択） ========
 function renderShiftSelector() {
-  var html = '<div style="font-size:11px;color:#999;margin-bottom:4px;">STEP 5 / 5</div>'
-    +'<div style="font-weight:700;margin-bottom:8px;">'+STEP_CONFIG.shift.question+'</div>'
-    +'<div style="font-size:12px;font-weight:700;color:#666;margin:6px 0 4px;">⏰ シフト</div>'
+  var html = '<div style="font-weight:700;margin-bottom:8px;">シフトやお休みの希望はありますか？🕐</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
     +'<div id="shift-list" style="display:flex;flex-wrap:wrap;">';
-  SHIFT_CATEGORIES.forEach(function(s){ html += makeChip(s.code, s.name, 'shift'); });
-  html += '</div>'
-    +'<div style="font-size:12px;font-weight:700;color:#666;margin:10px 0 4px;">✨ こだわり条件</div>'
-    +'<div id="feature-list" style="display:flex;flex-wrap:wrap;">';
-  FEATURE_CATEGORIES.forEach(function(f){ html += makeChip(f.code, f.name, 'feature'); });
-  html += '</div>'
-    +'<div style="display:flex;gap:6px;margin-top:10px;">'
-    +'<button onclick="skipShift()" style="'+S.btnS+'">こだわらない</button>'
-    +'<button onclick="confirmShift()" style="'+S.btnP+'flex:1;">検索する 🔍</button>'
+  SHIFT_LIST.forEach(function(s){ html += chip(s.code, s.name, 'shift'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+    +'<button onclick="confirmShift()" style="'+S.btnP+'flex:1;">次へ →</button>'
     +'</div>';
   return html;
 }
 
-function skipShift()    { SEL.shifts=[]; SEL.features=[]; addUserMsg('こだわらない'); runSearch(); }
 function confirmShift() {
-  SEL.shifts   = getCheckedFrom('shift-list');
-  SEL.features = getCheckedFrom('feature-list');
-  var shiftNames   = SEL.shifts.map(function(c){ return SHIFT_CATEGORIES.find(function(s){return s.code===c;}).name; });
-  var featureNames = SEL.features.map(function(c){ return FEATURE_CATEGORIES.find(function(f){return f.code===c;}).name; });
-  var all = shiftNames.concat(featureNames);
-  addUserMsg(all.length ? all.join('・') : 'こだわらない');
-  runSearch();
+  var codes = getCheckedFrom('shift-list');
+  if (codes.indexOf('shift000') >= 0 || !codes.length) { SEL.shifts = []; }
+  else { SEL.shifts = codes; }
+  var names = SEL.shifts.map(function(c){ return SHIFT_LIST.find(function(s){return s.code===c;}).name; });
+  addUserMsg(names.length ? names.join('・') : 'こだわらない');
+  FLOW_STEP = 5;
+  askFlowStep();
 }
 
-// ======== 次の質問を表示 ========
-function askNextQuestion() {
-  if (currentStep === 0) {
-    areaSubStep = 'region';
-    SEL.regions=[]; SEL.prefs=[]; SEL.cities=[]; SEL.stations=[];
+function renderFeatureSelector() {
+  var html = '<div style="font-weight:700;margin-bottom:8px;">こだわり条件はありますか？✨</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
+    +'<div id="feature-list" style="display:flex;flex-wrap:wrap;">';
+  FEATURE_LIST.forEach(function(f){ html += chip(f.code, f.name, 'feature'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+    +'<button onclick="confirmFeature()" style="'+S.btnP+'flex:1;">この条件で検索する 🔍</button>'
+    +'</div>';
+  return html;
+}
+
+function confirmFeature() {
+  var codes = getCheckedFrom('feature-list');
+  if (codes.indexOf('gf000') >= 0 || !codes.length) { SEL.features = []; }
+  else { SEL.features = codes; }
+  var names = SEL.features.map(function(c){ return FEATURE_LIST.find(function(f){return f.code===c;}).name; });
+  addUserMsg(names.length ? names.join('・') : 'こだわらない');
+  FLOW_STEP = 6;
+  askFlowStep();
+}
+
+
+// ===== 給与選択（絞り込み⑤） =====
+function renderSalarySelector() {
+  // 雇用形態に応じて時給 or 月給を切り替え
+  var isPartTime = SEL.employment.indexOf('pt') >= 0 ||
+                   (SEL.employment.length === 0); // 未選択の場合は両方
+  var isFullTime = SEL.employment.indexOf('rs') >= 0;
+  var showBoth   = (isPartTime && isFullTime) || SEL.employment.length === 0;
+
+  var html = '<div style="font-weight:700;margin-bottom:8px;">給与の希望はありますか？💴</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
+    +'<div id="salary-list" style="display:flex;flex-wrap:wrap;">';
+
+  if (showBoth || isPartTime) {
+    html += '<div style="font-size:12px;font-weight:700;color:#666;width:100%;margin:4px 0 2px;">⏱️ 時給</div>';
+    ['950円以上','1,000円以上','1,100円以上','1,200円以上','1,300円以上','1,500円以上'].forEach(function(v){
+      html += '<label style="'+S.chip+'" onclick="toggleChip(this)">'
+        +'<input type="checkbox" value="時給'+v+'" style="display:none">時給 '+v+'</label>';
+    });
+  }
+  if (showBoth || isFullTime) {
+    html += '<div style="font-size:12px;font-weight:700;color:#666;width:100%;margin:8px 0 2px;">📅 月給</div>';
+    ['20万円以上','22万円以上','25万円以上','28万円以上','30万円以上','35万円以上'].forEach(function(v){
+      html += '<label style="'+S.chip+'" onclick="toggleChip(this)">'
+        +'<input type="checkbox" value="月給'+v+'" style="display:none">月給 '+v+'</label>';
+    });
+  }
+
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+    +'<button onclick="skipSalary()" style="'+S.btnS+'">こだわらない</button>'
+    +'<button onclick="confirmSalary()" style="'+S.btnP+'flex:1;">この条件で検索する 🔍</button>'
+    +'</div>';
+  return html;
+}
+
+function skipSalary()    { SEL.salary=''; addUserMsg('こだわらない'); runSearch(true); }
+function confirmSalary() {
+  var el = document.getElementById('salary-list');
+  var checked = [];
+  if (el) el.querySelectorAll('input[type=checkbox]:checked').forEach(function(c){ checked.push(c.value); });
+  SEL.salary = checked.length ? checked[checked.length-1] : '';
+  addUserMsg(SEL.salary || 'こだわらない');
+  runSearch(true);
+}
+
+// ===== フローステップ管理 =====
+function askFlowStep() {
+  if (FLOW_STEP === 0) {
     appendMsg('bot', renderRegionSelector());
-  } else if (currentStep === 1) {
+  } else if (FLOW_STEP === 1) {
     appendMsg('bot', renderEmploymentSelector());
-  } else if (currentStep === 2) {
+  } else if (FLOW_STEP === 2) {
     appendMsg('bot', renderJobTypeSelector());
-  } else if (currentStep === 3) {
-    appendMsg('bot', renderSalarySelector());
-  } else if (currentStep === 4) {
+  } else if (FLOW_STEP === 3) {
+    appendMsg('bot', renderGenreSelector());
+  } else if (FLOW_STEP === 4) {
     appendMsg('bot', renderShiftSelector());
-  } else {
-    runSearch();
+  } else if (FLOW_STEP === 5) {
+    appendMsg('bot', renderFeatureSelector());
+  } else if (FLOW_STEP === 6) {
+    appendMsg('bot', renderSalarySelector());
   }
 }
 
-// ======== 検索URLを生成 ========
-function buildSearchUrl() {
-  var params = [];
-  SEL.prefs.forEach(function(p){ if(PREF_CODE[p]) params.push('pref[]='+PREF_CODE[p]); });
-  SEL.employment.forEach(function(e){ params.push('workstyle[]='+e); });
-  SEL.jobTypes.forEach(function(j){ params.push('option[1][]='+j); });
-  SEL.shifts.forEach(function(s){ params.push('option[3][]='+s); });
-  SEL.features.forEach(function(f){ params.push('option[4][]='+f); });
-  return SEARCH_BASE + (params.length ? '?'+params.join('&') : '');
-}
-
-// ======== 求人データ取得 ========
+// ===== 求人データ取得 =====
 function fetchJobs(force) {
   var now=Date.now(), cached=localStorage.getItem(CACHE_KEY),
       cachedAt=parseInt(localStorage.getItem(CACHE_TIME)||'0'), ageMin=(now-cachedAt)/60000;
@@ -807,134 +861,259 @@ function setSyncBar(s,t){
   document.getElementById('job-count-label').textContent=s==='ok'?'求人 '+JOB_DATA.length+'件':'—';
 }
 
-// ======== 求人絞り込み ========
-function filterJobsByConditions() {
-  var empNames = SEL.employment.map(function(c){ return EMPLOY_CATEGORIES.find(function(e){return e.code===c;}); }).filter(Boolean).map(function(e){return e.name;});
-  var jobNames = SEL.jobTypes.map(function(c){ return JOB_CATEGORIES.find(function(j){return j.code===c;}); }).filter(Boolean).map(function(j){return j.name;});
+// ===== 求人絞り込み =====
+function filterJobs() {
+  var empNames = SEL.employment.map(function(c){
+    var e=EMPLOY_LIST.find(function(x){return x.code===c;}); return e?e.name:'';
+  }).filter(Boolean);
+  var jobNames = SEL.jobTypes.map(function(c){
+    var j=JOB_LIST.find(function(x){return x.code===c;}); return j?j.name:'';
+  }).filter(Boolean);
+  var genreNames = SEL.genres.map(function(c){
+    var g=GENRE_LIST.find(function(x){return x.code===c;}); return g?g.name:'';
+  }).filter(Boolean);
+  var shiftNames = SEL.shifts.map(function(c){
+    var s=SHIFT_LIST.find(function(x){return x.code===c;}); return s?s.name:'';
+  }).filter(Boolean);
+  var featureNames = SEL.features.map(function(c){
+    var f=FEATURE_LIST.find(function(x){return x.code===c;}); return f?f.name:'';
+  }).filter(Boolean);
 
   return JOB_DATA.filter(function(j){
-    var text=[j.title,j.company,j.area,j.pref,j.city,j.station,j.jobType,j.employment,j.features,j.genre].join(' ').toLowerCase();
+    var text=[j.title,j.company,j.area,j.pref,j.city,j.station,
+              j.jobType,j.employment,j.features,j.genre,j.detail].join(' ').toLowerCase();
 
     // エリア
     if (SEL.prefs.length) {
-      var pm=SEL.prefs.some(function(p){return text.indexOf(p.replace(/[都道府県]/g,'').toLowerCase())>=0;});
+      var pm=SEL.prefs.some(function(p){
+        return text.indexOf(p.replace(/[都道府県]/g,'').toLowerCase())>=0||text.indexOf(p.toLowerCase())>=0;
+      });
       if (!pm) {
-        var cm=SEL.cities.length&&SEL.cities.some(function(c){return text.indexOf(c.replace(/[市区町村]/g,'').toLowerCase())>=0;});
-        var sm=SEL.stations.length&&SEL.stations.some(function(s){return text.indexOf(s.toLowerCase())>=0;});
+        var cm=SEL.cities.length&&SEL.cities.some(function(c){
+          return text.indexOf(c.replace(/[市区町村]/g,'').toLowerCase())>=0;
+        });
+        var sm=SEL.stations.length&&SEL.stations.some(function(s){
+          return text.indexOf(s.toLowerCase())>=0;
+        });
         if (!cm&&!sm) return false;
       }
     }
     // 雇用形態
     if (empNames.length) {
-      var em=empNames.some(function(n){return text.indexOf(n.replace('・パート','').toLowerCase())>=0;});
-      if (!em) return false;
+      var hasAll = empNames.some(function(n){
+        return text.indexOf(n.replace('・パート','').toLowerCase())>=0;
+      });
+      if (!hasAll) return false;
     }
     // 職種
     if (jobNames.length) {
-      var jm=jobNames.some(function(n){return text.replace(/[・]/g,'').indexOf(n.replace(/[・]/g,'').toLowerCase())>=0;});
+      var jm=jobNames.some(function(n){
+        return text.replace(/[・]/g,'').indexOf(n.replace(/[・]/g,'').toLowerCase())>=0;
+      });
       if (!jm) return false;
     }
+    // ジャンル（テキストマッチ）
+    if (genreNames.length) {
+      var gm=genreNames.some(function(n){
+        var keywords=n.replace(/[・ー]/g,'').toLowerCase().substring(0,4);
+        return text.replace(/[・ー]/g,'').indexOf(keywords)>=0;
+      });
+      if (!gm) return false;
+    }
+    // シフト
+    if (shiftNames.length) {
+      var shm=shiftNames.some(function(n){
+        return text.indexOf(n.toLowerCase().substring(0,5))>=0;
+      });
+      if (!shm) return false;
+    }
+    // 給与フィルタ（テキストマッチ）
+    if (SEL.salary) {
+      var salaryNum = parseInt(SEL.salary.replace(/[^0-9]/g,''));
+      var jobSalary = j.salaryMin || j.salaryMax || 0;
+      // salaryMinがある場合のみフィルタ（データがない場合は通す）
+      if (jobSalary > 0 && salaryNum > 0 && jobSalary < salaryNum) return false;
+    }
     return true;
-  }).slice(0,20);
+  });
 }
 
-// ======== AI呼び出し ========
-function callAI(msg, matched) {
-  var jobList=matched.map(function(j){return{id:j.id,title:j.title,company:j.company,area:j.area||j.pref,jobType:j.jobType,employment:j.employment,salary:j.salaryText,station:j.station,url:j.applyUrl};});
+// ===== 検索URL生成 =====
+function buildSearchUrl() {
+  var params=[];
+  SEL.prefs.forEach(function(p){ if(PREF_CODE[p]) params.push('pref[]='+PREF_CODE[p]); });
+  SEL.employment.forEach(function(e){ params.push('workstyle[]='+e); });
+  SEL.jobTypes.forEach(function(j){ params.push('option[1][]='+j); });
+  SEL.shifts.forEach(function(s){ params.push('option[3][]='+s); });
+  SEL.features.forEach(function(f){ params.push('option[4][]='+f); });
+  return SEARCH_BASE+(params.length?'?'+params.join('&'):'');
+}
+
+// ===== AI呼び出し =====
+function callAI(userMessage, matched) {
+  var jobList = matched.slice(0,20).map(function(j){
+    return {id:j.id,title:j.title,company:j.company,area:j.area||j.pref,
+            jobType:j.jobType,employment:j.employment,salary:j.salaryText,
+            station:j.station,url:j.applyUrl};
+  });
+
   var sp;
   if (STAGE==='results') {
-    sp='あなたはペコリッチの求人検索AIアシスタントです。\n'
+    sp = 'あなたはペコリッチの求人検索AIアシスタントです。\n'
       +'マッチした求人:\n'+JSON.stringify(jobList)+'\n\n'
-      +(matched.length>0?'最大3件を提案し「いかがでしたか？」と感想を聞いてください。\n':'条件に合う公開求人が見つかりませんでした。\n')
-      +'【絶対ルール】面談・会員登録への誘導はしない。\n'
+      +(matched.length>0?'最大3件を自然な文章で提案し、最後に「いかがでしたか？」と感想を聞いてください。\n':'条件に合う公開求人が見つかりませんでした。非公開求人の可能性を示唆してください。\n')
+      +'【絶対ルール】面談・会員登録への誘導は絶対しない。\n'
       +'{"message":"150字以内","jobs":[],"quickReplies":[],"hasResults":'+(matched.length>0?'true':'false')+'}';
   } else {
-    sp='あなたはペコリッチのAIアシスタントです。ユーザー発言:「'+msg+'\"\n'
-      +'・非公開求人/会員登録→showRegisterBtn:true\n・プロ/アドバイザー/相談→showConsultBtn:true\n・違う/合わない→showConsultBtn:true\n'
-      +'{"message":"200字以内","jobs":[],"quickReplies":[],"showConsultBtn":false,"showRegisterBtn":false}';
+    sp = 'あなたはペコリッチのAIアシスタントです。ユーザー発言:「'+userMessage+'\"\n\n'
+      +'対応ルール:\n'
+      +'・「気に入った」「応募したい」「良さそう」→ プロのサポートで面接成功率アップを訴求（showConsultBtn:true）\n'
+      +'・「非公開求人」「もっと見たい」→ 非公開求人が多数あることを強調（showConsultBtn:true）\n'
+      +'・「違う」「合わない」「ない」→ 非公開求人の存在と無料相談を強調（showConsultBtn:true）\n'
+      +'【絶対ルール】会員登録ボタンは出さない。面談→その後登録案内の流れ。\n'
+      +'{"message":"200字以内","jobs":[],"quickReplies":[],"showConsultBtn":false}';
   }
+
   return fetch(AI_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1000,system:sp,messages:[{role:'user',content:msg}]})})
+    body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:800,system:sp,
+      messages:[{role:'user',content:userMessage}]})})
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-    .then(function(d){var raw=(d.content&&d.content[0]&&d.content[0].text)||'';if(!raw)throw new Error('empty');
-      try{return JSON.parse(raw.replace(/```json|```/g,'').trim());}catch(e){return{message:raw.slice(0,200),jobs:[],quickReplies:[]};} });
+    .then(function(d){
+      var raw=(d.content&&d.content[0]&&d.content[0].text)||'';
+      if(!raw) throw new Error('empty');
+      try{return JSON.parse(raw.replace(/```json|```/g,'').trim());}
+      catch(e){return{message:raw.slice(0,200),jobs:[],quickReplies:[]};}
+    });
 }
 
-// ======== 検索実行 ========
-function runSearch() {
-  STAGE='results';
-  var matched=filterJobsByConditions(), searchUrl=buildSearchUrl(), typing=showTyping();
-  callAI('検索結果を表示してください',matched).then(function(r){
+// ===== 検索実行 =====
+function runSearch(isFinal) {
+  STAGE = 'results';
+  var matched  = filterJobs();
+  var searchUrl = buildSearchUrl();
+
+  // 件数が多い場合で、初回検索の場合 → 絞り込みへ
+  if (!isFinal && matched.length > REFINE_THRESHOLD) {
+    appendMsg('bot',
+      '<div style="font-size:13px;color:#E8621A;font-weight:700;margin-bottom:4px;">🔍 '+matched.length+'件見つかりました！</div>'
+      +'件数が多いので、さらに条件を絞り込みましょう。<br>'
+      +'スキップして今すぐ結果を見ることもできます。'
+      +'<div style="display:flex;gap:8px;margin-top:10px;">'
+      +'<button onclick="skipRefineAll(\''+esc(searchUrl)+'\')" style="'+S.btnS+'flex:1;">今の条件で結果を見る</button>'
+      +'<button onclick="startRefine()" style="'+S.btnP+'flex:1;">絞り込む →</button>'
+      +'</div>');
+    return;
+  }
+
+  // 件数0件の場合
+  if (matched.length === 0) {
+    showNoResults(searchUrl);
+    return;
+  }
+
+  // 通常の検索結果表示
+  showResults(matched, searchUrl);
+}
+
+function startRefine() {
+  FLOW_STEP = 3;
+  askFlowStep();
+}
+
+function skipRefineAll(searchUrl) {
+  var matched = filterJobs();
+  showResults(matched, searchUrl);
+}
+
+function showNoResults(searchUrl) {
+  STAGE = 'afterresults';
+  var html = '😢 ご指定の条件に合う公開求人が見つかりませんでした。<br><br>'
+    +'<strong>でも、諦めないでください！</strong><br>'
+    +'実はペコリッチには一般公開していない<strong>非公開求人が多数</strong>あります。'
+    +'プロのアドバイザーがご希望に合う求人を直接ご紹介できます。'
+    +consultBtn()
+    +'<div style="margin-top:10px;"><a href="'+esc(searchUrl)+'" target="_blank" style="display:block;background:#F5F0E8;border:1px solid #ddd;color:#666;text-align:center;padding:10px;border-radius:10px;font-size:12px;text-decoration:none;">🔍 条件を広げてpecorich.jpで探す</a></div>'
+    +quickRepliesHtml(['🔍 条件を変えて再検索']);
+  appendMsg('bot', html);
+}
+
+function showResults(matched, searchUrl) {
+  STAGE = 'results';
+  var typing = showTyping();
+  callAI('検索結果を表示してください', matched).then(function(r){
     typing.remove();
     var html='';
-    if(r.message) html+=esc(r.message).replace(/\n/g,'<br>');
-    if(r.jobs&&r.jobs.length) html+=r.jobs.map(jobCard).join('');
-    html+='<div style="margin-top:10px;"><a href="'+esc(searchUrl)+'" target="_blank" style="display:block;background:#FFF0E8;border:1.5px solid #E8621A;color:#E8621A;text-align:center;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;">🔍 該当する他の求人を見る →</a></div>';
-    var rep=r.hasResults
-      ?['✅ 気に入った求人がある','🔍 条件を変えて再検索','👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談']
+    if (r.message) html+=esc(r.message).replace(/\n/g,'<br>');
+    if (r.jobs&&r.jobs.length) html+=r.jobs.map(jobCard).join('');
+    html+='<div style="margin-top:10px;">'
+      +'<a href="'+esc(searchUrl)+'" target="_blank" style="display:block;background:#FFF0E8;border:1.5px solid #E8621A;color:#E8621A;text-align:center;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;">'
+      +'🔍 該当する求人をすべて見る（'+matched.length+'件）→</a></div>';
+    var rep = r.hasResults
+      ?['✅ 気に入った求人がある','👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談','🔍 条件を変えて再検索']
       :['👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談','🔍 条件を変えて再検索'];
     html+=quickRepliesHtml(rep);
-    appendMsg('bot',html);
-  }).catch(function(){appendMsg('bot','⚠️ エラーが発生しました。');});
+    appendMsg('bot', html);
+  }).catch(function(e){
+    showTyping && showTyping().remove;
+    appendMsg('bot','⚠️ 結果の取得中にエラーが発生しました。もう一度お試しください。');
+    console.error(e);
+  });
 }
 
-// ======== 再検索 ========
+// ===== 再検索 =====
 function resetSearch() {
-  SEL={regions:[],prefs:[],cities:[],stations:[],employment:[],jobTypes:[],salary:'',shifts:[],features:[]};
-  currentStep=0; STAGE='questioning'; areaSubStep='region';
+  SEL={prefs:[],cities:[],stations:[],employment:[],jobTypes:[],genres:[],shifts:[],features:[]};
+  FLOW_STEP=0; STAGE='questioning'; selectedRegions=[];
   appendMsg('bot','条件をリセットしました！🔄<br>もう一度条件を教えてください。<br><br>'+renderRegionSelector());
 }
 
-// ======== メッセージ処理 ========
+// ===== メッセージ処理 =====
 function handleMessage(text) {
-  if(text.indexOf('再検索')>=0||text.indexOf('条件を変え')>=0){resetSearch();return;}
-  if(STAGE==='results'){
+  if (text.indexOf('再検索')>=0||text.indexOf('条件を変え')>=0) { resetSearch(); return; }
+  if (STAGE==='results') {
     STAGE='afterresults';
     var t=showTyping();
     callAI(text,[]).then(function(r){
-      t.remove();var html='';
+      t.remove();
+      var html='';
       if(r.message) html+=esc(r.message).replace(/\n/g,'<br>');
       if(r.showConsultBtn) html+=consultBtn();
       var rep=r.quickReplies||[];
-      if(rep.indexOf('🔍 条件を変えて再検索')<0)rep.push('🔍 条件を変えて再検索');
-      html+=quickRepliesHtml(rep);appendMsg('bot',html);
-    }).catch(function(){appendMsg('bot','⚠️ エラーが発生しました。');});
+      if(rep.indexOf('🔍 条件を変えて再検索')<0) rep.push('🔍 条件を変えて再検索');
+      html+=quickRepliesHtml(rep);
+      appendMsg('bot',html);
+    }).catch(function(){appendMsg('bot','⚠️ エラーが発生しました。しばらくしてから再度お試しください。');});
     return;
   }
-  if(STAGE==='afterresults'){
+  if (STAGE==='afterresults') {
     var t2=showTyping();
     callAI(text,[]).then(function(r){
-      t2.remove();var html='';
+      t2.remove();
+      var html='';
       if(r.message) html+=esc(r.message).replace(/\n/g,'<br>');
       if(r.showConsultBtn) html+=consultBtn();
       var rep=r.quickReplies||[];
-      if(rep.indexOf('🔍 条件を変えて再検索')<0)rep.push('🔍 条件を変えて再検索');
-      html+=quickRepliesHtml(rep);appendMsg('bot',html);
-    }).catch(function(){appendMsg('bot','⚠️ エラーが発生しました。');});
+      if(rep.indexOf('🔍 条件を変えて再検索')<0) rep.push('🔍 条件を変えて再検索');
+      html+=quickRepliesHtml(rep);
+      appendMsg('bot',html);
+    }).catch(function(){appendMsg('bot','⚠️ エラーが発生しました。しばらくしてから再度お試しください。');});
   }
 }
 
-// ======== UI部品 ========
+// ===== UI部品 =====
 function appendMsg(role,html){
   var area=document.getElementById('chat-messages'),div=document.createElement('div');
   div.className='msg '+role;
   if(role==='bot') div.innerHTML='<div class="avatar">🍽️</div><div class="bubble">'+html+'</div>';
   else div.innerHTML='<div class="bubble">'+esc(html)+'</div>';
-  area.appendChild(div);area.scrollTop=area.scrollHeight;return div;
+  area.appendChild(div); scrollBottom(); return div;
 }
-
 function addUserMsg(text){
   var area=document.getElementById('chat-messages'),div=document.createElement('div');
-  div.className='msg user';div.innerHTML='<div class="bubble">'+esc(text)+'</div>';
-  area.appendChild(div);area.scrollTop=area.scrollHeight;
+  div.className='msg user'; div.innerHTML='<div class="bubble">'+esc(text)+'</div>';
+  area.appendChild(div); scrollBottom();
 }
-
-function showTyping(){return appendMsg('bot','<div class="typing-dots"><span></span><span></span><span></span></div>');}
-
-function updateLastBotBubble(html){
-  var b=document.querySelectorAll('.msg.bot .bubble');
-  if(b.length){b[b.length-1].innerHTML=html;var a=document.getElementById('chat-messages');a.scrollTop=a.scrollHeight;}
-}
+function showTyping(){ return appendMsg('bot','<div class="typing-dots"><span></span><span></span><span></span></div>'); }
 
 function jobCard(job){
   var url=job.url||'#';
@@ -948,45 +1127,51 @@ function jobCard(job){
 function consultBtn(){
   return '<div style="margin-top:12px;">'
     +'<a href="'+CONSULT_URL+'" target="_blank" style="display:block;background:#3D9970;color:white;text-align:center;padding:13px 20px;border-radius:12px;font-size:14px;font-weight:700;text-decoration:none;box-shadow:0 3px 10px rgba(61,153,112,0.3);">👨‍💼 プロのアドバイザーに無料相談する</a>'
-    +'<div style="font-size:11px;color:#888;text-align:center;margin-top:5px;">完全無料・履歴書不要・オンライン対応</div>'
-    +'<div style="margin-top:8px;padding:10px 12px;background:#F0FAF5;border-radius:10px;font-size:12px;color:#2D7A5A;">'
-    +'📝 面談後、ご希望の方は会員登録でさらに多くの非公開求人をご確認いただけます'
-    +'</div>'
+    +'<div style="font-size:11px;color:#888;text-align:center;margin-top:4px;">完全無料・履歴書不要・オンライン対応</div>'
+    +'<div style="margin-top:8px;padding:10px 12px;background:#F0FAF5;border-radius:10px;font-size:12px;color:#2D7A5A;">📝 面談後、ご希望の方は会員登録でさらに多くの非公開求人をご確認いただけます</div>'
     +'</div>';
 }
-function registerBtn(){return '<div style="margin-top:10px;"><a href="'+REGISTER_URL+'" target="_blank" style="display:block;background:#E8621A;color:white;text-align:center;padding:12px 20px;border-radius:12px;font-size:13px;font-weight:700;text-decoration:none;">🔒 会員登録して非公開求人を見る（無料）</a><div style="font-size:11px;color:#888;text-align:center;margin-top:4px;">登録無料・非公開求人多数掲載中</div></div>';}
 
 function quickRepliesHtml(rep){
-  if(!rep||!rep.length)return'';
-  return'<div class="quick-replies">'+rep.map(function(r){return'<button class="quick-btn" onclick="sendQuick(\''+esc(r)+'\')">'+esc(r)+'</button>';}).join('')+'</div>';
+  if(!rep||!rep.length) return '';
+  return '<div class="quick-replies">'+rep.map(function(r){
+    return '<button class="quick-btn" onclick="sendQuick(\''+esc(r)+'\')">'+esc(r)+'</button>';
+  }).join('')+'</div>';
 }
-
-function sendQuick(t){document.getElementById('chat-input').value=t;sendMessage();}
+function sendQuick(t){ document.getElementById('chat-input').value=t; sendMessage(); }
 
 function sendMessage(){
   var input=document.getElementById('chat-input'),btn=document.getElementById('send-btn'),text=input.value.trim();
-  if(!text||isSending)return;
-  isSending=true;btn.disabled=true;input.value='';input.style.height='auto';
-  if(STAGE==='questioning'){addUserMsg(text);isSending=false;btn.disabled=false;document.getElementById('chat-input').focus();}
-  else{
-    appendMsg('user',text);handleMessage(text);
-    setTimeout(function(){isSending=false;btn.disabled=false;document.getElementById('chat-input').focus();},100);
+  if(!text||isSending) return;
+  isSending=true; btn.disabled=true; input.value=''; input.style.height='auto';
+  if(STAGE==='questioning'){
+    addUserMsg(text); isSending=false; btn.disabled=false; input.focus();
+  } else {
+    appendMsg('user',text); handleMessage(text);
+    setTimeout(function(){isSending=false;btn.disabled=false;input.focus();},100);
   }
 }
 
 function showWelcome(){
   appendMsg('bot','こんにちは！🍳<br><strong>ペコリッチAI相談</strong>へようこそ。<br><br>'
     +'飲食業界のお仕事を一緒に探しましょう！<br>'
-    +'いくつか質問させていただきます。<br><br>'
+    +'3つの質問でぴったりの求人をご案内します。<br><br>'
     +renderRegionSelector());
 }
 
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function sampleJobs(){return[{id:'1',title:'ホールスタッフ（正社員）',company:'イタリアンレストラン 渋谷店',area:'東京・渋谷',jobType:'サービス・ホール',employment:'正社員',salaryText:'月給22〜28万円',applyUrl:''},{id:'2',title:'キッチンスタッフ',company:'和食居酒屋 新宿店',area:'東京・新宿',jobType:'キッチン・調理',employment:'アルバイト・パート',salaryText:'時給1,200〜1,400円',applyUrl:''}];}
+function sampleJobs(){ return[
+  {id:'1',title:'ホールスタッフ（正社員）',company:'イタリアンレストラン 渋谷店',area:'東京・渋谷',jobType:'サービス・ホール',employment:'正社員',salaryText:'月給22〜28万円',applyUrl:''},
+  {id:'2',title:'キッチンスタッフ',company:'和食居酒屋 新宿店',area:'東京・新宿',jobType:'キッチン・調理',employment:'アルバイト・パート',salaryText:'時給1,200〜1,400円',applyUrl:''}
+];}
 
-document.getElementById('chat-input').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,80)+'px';});
-document.getElementById('chat-input').addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}});
+document.getElementById('chat-input').addEventListener('input',function(){
+  this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,80)+'px';
+});
+document.getElementById('chat-input').addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}
+});
 document.getElementById('send-btn').addEventListener('click',sendMessage);
 
 fetchJobs(false).then(function(){
