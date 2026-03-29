@@ -270,6 +270,27 @@ html,body{height:100%;font-family:'Noto Sans JP',sans-serif;background:var(--bg)
 </div>
 
 <script>
+// 都道府県完全一致マッチ（pref or area フィールドのみ使用）
+function prefMatches(j) {
+  return SEL.prefs.some(function(p) {
+    return j.pref === p || j.area === p;
+  });
+}
+
+// 会社名から地名を抽出（例：「庄や 錦糸町店」→「錦糸町」）
+function extractLocationFromCompany(companyName) {
+  if (!companyName) return null;
+  // 「〇〇 [地名]店」パターン
+  var m = companyName.match(/[　 ]([^\s　 ]+?)(?:店|支店|本店|店舗)$/);
+  if (m && m[1] && m[1].length >= 2 && m[1].length <= 8) {
+    // 「あすとウィズ」のような店舗名は除外（カタカナのみ等）
+    if (!/^[ァ-ヴ]+$/.test(m[1]) || m[1].length <= 4) {
+      return m[1];
+    }
+  }
+  return null;
+}
+
 /* =====================================================
    ペコリッチ AI相談チャット v7
    フロー：エリア→雇用形態→職種→検索→（多い場合は絞り込み）→結果→面談
@@ -604,15 +625,56 @@ function goStation()      { updateLastBotBubble(renderStationSelector()); }
 function skipAreaDetail() { SEL.cities=[]; SEL.stations=[]; finalizeArea(); }
 
 function renderCitySelector() {
-  var cities = [];
-  SEL.prefs.forEach(function(p){
-    (CITY_DATA[p]||CITY_DATA['DEFAULT']).forEach(function(c){ if(cities.indexOf(c)<0) cities.push(c); });
+  // pref完全一致でフィルタし、title・company名から市区町村を抽出
+  var citySet = {};
+  var matchedJobs = JOB_DATA.filter(prefMatches);
+  var totalJobs   = matchedJobs.length;
+
+  matchedJobs.forEach(function(j) {
+    // タイトルから市区町村を抽出（「東京都〇〇区」等）
+    var searchText = (j.title||'') + ' ' + (j.company||'') + ' ' + (j.area||'');
+    var matches = searchText.match(/[^\s都道府県ぁ-んァ-ヴ一-龥]{1,6}[市区町村]/g);
+    if (matches) {
+      matches.forEach(function(m) {
+        if (m && m.length >= 2 && m.length <= 8) {
+          citySet[m] = (citySet[m]||0) + 1;
+        }
+      });
+    }
+    // 会社名から地名を補完
+    var loc = extractLocationFromCompany(j.company);
+    if (loc) citySet[loc] = (citySet[loc]||0) + 1;
   });
-  var html = '<div style="font-weight:700;margin-bottom:6px;">市区町村を選んでください🏙️</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
-    +'<div id="city-list" style="display:flex;flex-wrap:wrap;">';
-  cities.forEach(function(c){ html += chip(c, c, 'city'); });
-  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+
+  var cities = Object.keys(citySet).sort(function(a,b){
+    return citySet[b] - citySet[a];
+  });
+
+  var html = '<div style="font-weight:700;margin-bottom:6px;">市区町村・エリアを選んでください🏙️</div>';
+
+  if (cities.length === 0) {
+    html += '<div style="font-size:11px;color:#888;margin-bottom:8px;">選択した都道府県の求人は<strong>'+totalJobs+'件</strong>あります。</div>'
+      +'<div style="padding:12px;background:#FFF3CD;border-radius:8px;font-size:12px;color:#856404;">'
+      +'⚠️ 現在のデータでは市区町村を特定できません。<br>'
+      +'GAS同期スクリプトのcity/stationフィールド設定が必要です。<br>'
+      +'このままエリア確定して次の条件に進むか、駅から選んでください。'
+      +'</div>';
+  } else {
+    html += '<div style="font-size:11px;color:#3D9970;margin-bottom:4px;">✅ 求人データから抽出（'+cities.length+'エリア / 都道府県内'+totalJobs+'件）</div>'
+      +'<div style="font-size:11px;color:#aaa;margin-bottom:8px;">複数選択できます</div>'
+      +'<div id="city-list" style="display:flex;flex-wrap:wrap;">';
+    cities.forEach(function(c) {
+      html += '<label style="'+S.chip+'" onclick="toggleChip(this)">'
+        +'<input type="checkbox" value="'+esc(c)+'" style="display:none">'
+        +esc(c)+'<span style="font-size:10px;color:#bbb;margin-left:3px;">('+citySet[c]+'件)</span></label>';
+    });
+    html += '</div>'
+      +'<div style="margin-top:8px;padding:8px;background:#F5F0E8;border-radius:8px;font-size:11px;color:#888;">'
+      +'💡 件数はその市区町村に関連する求人数です。表示されていないエリアは現在求人掲載なし、またはデータ未設定のため省略しています。'
+      +'</div>';
+  }
+
+  html += '<div style="display:flex;gap:6px;margin-top:10px;">'
     +'<button onclick="backToAreaChoice()" style="'+S.btnB+'">← 戻る</button>'
     +'<button onclick="confirmCities()" style="'+S.btnP+'flex:1;">エリア確定 ✓</button>'
     +'</div>';
@@ -623,25 +685,59 @@ function backToAreaChoice() { updateLastBotBubble(renderAreaChoiceSelector()); }
 function confirmCities()    { SEL.cities = getCheckedFrom('city-list'); finalizeArea(); }
 
 function renderStationSelector() {
-  var lineMap = {};
-  SEL.prefs.forEach(function(p){
-    var lines = LINE_DATA[p] || LINE_DATA['DEFAULT'];
-    Object.keys(lines).forEach(function(line){
-      if (!lineMap[line]) lineMap[line] = [];
-      lines[line].forEach(function(st){ if(lineMap[line].indexOf(st)<0) lineMap[line].push(st); });
+  // pref完全一致でフィルタし、title・company名から駅名を抽出
+  var stationSet = {};
+  var matchedJobs = JOB_DATA.filter(prefMatches);
+  var totalJobs   = matchedJobs.length;
+
+  matchedJobs.forEach(function(j) {
+    // 会社名から地名を抽出（「庄や 錦糸町店」→「錦糸町」）
+    var loc = extractLocationFromCompany(j.company);
+    if (loc) stationSet[loc] = (stationSet[loc]||0) + 1;
+
+    // タイトルから「〇〇駅」パターンを抽出
+    var titleText = (j.title||'') + ' ' + (j.company||'');
+    var stMatches = titleText.match(/([^\s「」（）()、。
+]{2,8})駅/g);
+    if (stMatches) {
+      stMatches.forEach(function(m) {
+        var st = m.replace(/駅$/,'').trim();
+        if (st && st.length >= 2 && st.length <= 8) {
+          stationSet[st] = (stationSet[st]||0) + 1;
+        }
+      });
+    }
+  });
+
+  var stations = Object.keys(stationSet).sort(function(a,b){
+    return stationSet[b] - stationSet[a];
+  });
+
+  var html = '<div style="font-weight:700;margin-bottom:6px;">最寄駅・エリアを選んでください🚉</div>';
+
+  if (stations.length === 0) {
+    html += '<div style="font-size:11px;color:#888;margin-bottom:8px;">選択した都道府県の求人は<strong>'+totalJobs+'件</strong>あります。</div>'
+      +'<div style="padding:12px;background:#FFF3CD;border-radius:8px;font-size:12px;color:#856404;">'
+      +'⚠️ 現在のデータでは駅名を特定できません。<br>'
+      +'GAS同期スクリプトのstationフィールド設定が必要です。<br>'
+      +'スキップして次の条件に進んでください。'
+      +'</div>';
+  } else {
+    html += '<div style="font-size:11px;color:#3D9970;margin-bottom:4px;">✅ 求人データから抽出（'+stations.length+'駅・エリア / 都道府県内'+totalJobs+'件）</div>'
+      +'<div style="font-size:11px;color:#aaa;margin-bottom:8px;">複数選択できます</div>'
+      +'<div id="station-list" style="display:flex;flex-wrap:wrap;">';
+    stations.forEach(function(st) {
+      html += '<label style="'+S.chip+'" onclick="toggleChip(this)">'
+        +'<input type="checkbox" value="'+esc(st)+'" style="display:none">'
+        +esc(st)+'<span style="font-size:10px;color:#bbb;margin-left:3px;">('+stationSet[st]+'件)</span></label>';
     });
-  });
-  var html = '<div style="font-weight:700;margin-bottom:6px;">沿線・駅を選んでください🚉</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
-    +'<div id="station-list">';
-  Object.keys(lineMap).forEach(function(line){
-    html += '<div style="margin-bottom:10px;">'
-      +'<div style="font-size:11.5px;font-weight:700;color:#666;padding:3px 8px;background:#F5F0E8;border-radius:6px;margin-bottom:4px;">🚃 '+esc(line)+'</div>'
-      +'<div style="display:flex;flex-wrap:wrap;">';
-    lineMap[line].forEach(function(st){ html += chip(st, st, 'station'); });
-    html += '</div></div>';
-  });
-  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+    html += '</div>'
+      +'<div style="margin-top:8px;padding:8px;background:#F5F0E8;border-radius:8px;font-size:11px;color:#888;">'
+      +'💡 表示されていない駅は現在求人掲載なし、またはデータ未設定のため省略しています。'
+      +'</div>';
+  }
+
+  html += '<div style="display:flex;gap:6px;margin-top:10px;">'
     +'<button onclick="backToAreaChoice()" style="'+S.btnB+'">← 戻る</button>'
     +'<button onclick="skipStation()" style="'+S.btnS+'">スキップ</button>'
     +'<button onclick="confirmStations()" style="'+S.btnP+'flex:1;">エリア確定 ✓</button>'
@@ -1039,25 +1135,32 @@ function showNoResults(searchUrl) {
 
 function showResults(matched, searchUrl) {
   STAGE = 'results';
-  var typing = showTyping();
-  callAI('検索結果を表示してください', matched).then(function(r){
-    typing.remove();
-    var html='';
-    if (r.message) html+=esc(r.message).replace(/\n/g,'<br>');
-    if (r.jobs&&r.jobs.length) html+=r.jobs.map(jobCard).join('');
-    html+='<div style="margin-top:10px;">'
-      +'<a href="'+esc(searchUrl)+'" target="_blank" style="display:block;background:#FFF0E8;border:1.5px solid #E8621A;color:#E8621A;text-align:center;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;">'
-      +'🔍 該当する求人をすべて見る（'+matched.length+'件）→</a></div>';
-    var rep = r.hasResults
-      ?['✅ 気に入った求人がある','👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談','🔍 条件を変えて再検索']
-      :['👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談','🔍 条件を変えて再検索'];
-    html+=quickRepliesHtml(rep);
-    appendMsg('bot', html);
-  }).catch(function(e){
-    showTyping && showTyping().remove;
-    appendMsg('bot','⚠️ 結果の取得中にエラーが発生しました。もう一度お試しください。');
-    console.error(e);
-  });
+
+  // AIを使わずローカルで直接表示（高速・安定）
+  var html = '';
+  var count = matched.length;
+
+  if (count > 0) {
+    html += '<div style="font-size:12px;color:#3D9970;font-weight:700;margin-bottom:8px;">✅ '+count+'件の求人が見つかりました！</div>';
+    matched.slice(0, 3).forEach(function(j){ html += jobCard(j); });
+  } else {
+    html += '😢 条件に合う公開求人が見つかりませんでした。';
+  }
+
+  html += '<div style="margin-top:10px;">'
+    +'<a href="'+esc(searchUrl)+'" target="_blank" style="'
+    +'display:block;background:#FFF0E8;border:1.5px solid #E8621A;'
+    +'color:#E8621A;text-align:center;padding:10px 16px;border-radius:10px;'
+    +'font-size:13px;font-weight:700;text-decoration:none;">'
+    +'🔍 該当する求人をすべて見る（'+count+'件）→</a></div>';
+
+  html += '<div style="margin-top:10px;font-size:13px;color:#666;">いかがでしたか？</div>';
+
+  var rep = count > 0
+    ? ['✅ 気に入った求人がある','👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談','🔍 条件を変えて再検索']
+    : ['👀 非公開求人も見たい','👨‍💼 プロのアドバイザーに相談','🔍 条件を変えて再検索'];
+  html += quickRepliesHtml(rep);
+  appendMsg('bot', html);
 }
 
 // ===== 再検索 =====
@@ -1116,12 +1219,49 @@ function addUserMsg(text){
 function showTyping(){ return appendMsg('bot','<div class="typing-dots"><span></span><span></span><span></span></div>'); }
 
 function jobCard(job){
-  var url=job.url||'#';
-  return '<div class="job-card" onclick="window.open(\''+esc(url)+'\',\'_blank\')">'
-    +'<div class="job-title">🏪 '+esc(job.title||job.company||'求人情報')+'</div>'
-    +'<div class="job-meta">'+(job.area?'<span>📍 '+esc(job.area)+'</span>':'')+(job.jobType?'<span>👤 '+esc(job.jobType)+'</span>':'')+(job.station?'<span>🚉 '+esc(job.station)+'</span>':'')+'</div>'
-    +'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">'+(job.employment?'<span class="tag">'+esc(job.employment)+'</span>':'')+(job.salary?'<span class="tag salary">💴 '+esc(job.salary)+'</span>':'')+'</div>'
-    +'<a class="apply-btn" href="'+esc(url)+'" target="_blank" onclick="event.stopPropagation()">応募する →</a></div>';
+  var url = job.url || job.applyUrl || '#';
+
+  // 給与表示（salaryMin または salaryText）
+  var salaryDisp = '';
+  if (job.salaryMin && job.salaryMin > 0) {
+    salaryDisp = job.salaryMin.toLocaleString() + '円〜';
+  } else if (job.salaryText) {
+    salaryDisp = job.salaryText;
+  } else if (job.salary) {
+    salaryDisp = job.salary;
+  }
+
+  // エリア（都道府県＋市区町村）
+  var areaDisp = '';
+  if (job.city && job.city !== job.pref) {
+    areaDisp = (job.pref||job.area||'') + ' ' + job.city;
+  } else {
+    areaDisp = job.area || job.pref || '';
+  }
+
+  var html = '<div class="job-card" onclick="window.open(\''+esc(url)+'\',\'_blank\')">'
+    // 求人タイトル
+    +'<div class="job-title">'+esc(job.title||job.company||'求人情報')+'</div>'
+    // 会社名
+    +(job.company?'<div style="font-size:11.5px;color:#888;margin-bottom:6px;">🏢 '+esc(job.company)+'</div>':'')
+    // エリア・駅
+    +'<div class="job-meta" style="margin-bottom:6px;">'
+    +(areaDisp?'<span>📍 '+esc(areaDisp.trim())+'</span>':'')
+    +(job.station?'<span>🚉 '+esc(job.station)+'駅</span>':'')
+    +(job.access?'<span style="font-size:11px;">（'+esc(job.access)+'）</span>':'')
+    +'</div>'
+    // タグ行：雇用形態・職種・ジャンル
+    +'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">'
+    +(job.employment?'<span class="tag" style="background:#EEF6FF;border-color:#A0C4FF;color:#1A56C4;">'+esc(job.employment)+'</span>':'')
+    +(job.jobType?'<span class="tag">'+esc(job.jobType)+'</span>':'')
+    +(job.genre?'<span class="tag" style="background:#F5F0E8;color:#7A5C47;">'+esc(job.genre)+'</span>':'')
+    +'</div>'
+    // 給与
+    +(salaryDisp?'<div style="font-size:13px;font-weight:700;color:#C04A00;margin-bottom:8px;">💴 '+esc(salaryDisp)+'</div>':'')
+    // 応募ボタン
+    +'<a class="apply-btn" href="'+esc(url)+'" target="_blank" onclick="event.stopPropagation()">詳細・応募する →</a>'
+    +'</div>';
+  return html;
 }
 
 function consultBtn(){
@@ -1174,13 +1314,34 @@ document.getElementById('chat-input').addEventListener('keydown',function(e){
 });
 document.getElementById('send-btn').addEventListener('click',sendMessage);
 
-fetchJobs(false).then(function(){
-  document.getElementById('loading-screen').style.display='none';
-  document.getElementById('chat-wrap').style.display='flex';
-  document.getElementById('send-btn').disabled=false;
+function startChat() {
+  document.getElementById('loading-screen').style.display = 'none';
+  document.getElementById('chat-wrap').style.display = 'flex';
+  document.getElementById('send-btn').disabled = false;
   showWelcome();
-  setInterval(function(){fetchJobs(true);},CACHE_MIN*60*1000);
-});
+}
+
+// 8秒タイムアウト保険（fetchが返らない場合）
+var _startTimer = setTimeout(function() {
+  if (JOB_DATA.length === 0) {
+    JOB_DATA = sampleJobs();
+    setSyncBar('error', '⚠️ データ取得タイムアウト。サンプルを表示中');
+  }
+  startChat();
+}, 8000);
+
+fetchJobs(false)
+  .then(function() {
+    clearTimeout(_startTimer);
+    startChat();
+    setInterval(function(){ fetchJobs(true); }, CACHE_MIN * 60 * 1000);
+  })
+  .catch(function() {
+    clearTimeout(_startTimer);
+    if (JOB_DATA.length === 0) JOB_DATA = sampleJobs();
+    setSyncBar('error', '⚠️ データ取得エラー。サンプルを表示中');
+    startChat();
+  });
 
 </script>
 </body>
