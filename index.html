@@ -1314,34 +1314,61 @@ document.getElementById('chat-input').addEventListener('keydown',function(e){
 });
 document.getElementById('send-btn').addEventListener('click',sendMessage);
 
-function startChat() {
-  document.getElementById('loading-screen').style.display = 'none';
-  document.getElementById('chat-wrap').style.display = 'flex';
-  document.getElementById('send-btn').disabled = false;
-  showWelcome();
-}
+// ★ チャットを即座に起動（データは裏で読み込む）
+document.getElementById('loading-screen').style.display = 'none';
+document.getElementById('chat-wrap').style.display = 'flex';
+document.getElementById('send-btn').disabled = false;
+showWelcome();
 
-// 8秒タイムアウト保険（fetchが返らない場合）
-var _startTimer = setTimeout(function() {
-  if (JOB_DATA.length === 0) {
-    JOB_DATA = sampleJobs();
-    setSyncBar('error', '⚠️ データ取得タイムアウト。サンプルを表示中');
+// データを裏で非同期読み込み
+(function loadData() {
+  var cached = localStorage.getItem(CACHE_KEY);
+  if (cached) {
+    try {
+      JOB_DATA = JSON.parse(cached);
+      setSyncBar('ok', '求人' + JOB_DATA.length + '件（キャッシュ）');
+    } catch(e) { JOB_DATA = []; }
   }
-  startChat();
-}, 8000);
 
-fetchJobs(false)
-  .then(function() {
-    clearTimeout(_startTimer);
-    startChat();
-    setInterval(function(){ fetchJobs(true); }, CACHE_MIN * 60 * 1000);
-  })
-  .catch(function() {
-    clearTimeout(_startTimer);
-    if (JOB_DATA.length === 0) JOB_DATA = sampleJobs();
-    setSyncBar('error', '⚠️ データ取得エラー。サンプルを表示中');
-    startChat();
-  });
+  // バックグラウンドでgetJobs取得（5秒タイムアウト）
+  var done = false;
+  var timer = setTimeout(function() {
+    if (!done) {
+      done = true;
+      if (JOB_DATA.length === 0) {
+        JOB_DATA = sampleJobs();
+        setSyncBar('error', '⚠️ サンプルデータを表示中');
+      }
+    }
+  }, 5000);
+
+  fetch(WIXBASE + '/getJobs')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (d.jobs && d.jobs.length) {
+        JOB_DATA = d.jobs;
+        localStorage.setItem(CACHE_KEY, JSON.stringify(JOB_DATA));
+        localStorage.setItem(CACHE_TIME, String(Date.now()));
+        setSyncBar('ok', '求人' + JOB_DATA.length + '件 (' + new Date().toLocaleTimeString('ja-JP') + ')');
+      }
+    })
+    .catch(function() {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (JOB_DATA.length === 0) {
+        JOB_DATA = sampleJobs();
+        setSyncBar('error', '⚠️ サンプルデータを表示中');
+      } else {
+        setSyncBar('error', '⚠️ キャッシュ使用中 (' + JOB_DATA.length + '件)');
+      }
+    });
+
+  setInterval(function() { fetchJobs(true); }, CACHE_MIN * 60 * 1000);
+})();
 
 </script>
 </body>
