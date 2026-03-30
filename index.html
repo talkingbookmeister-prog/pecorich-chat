@@ -304,7 +304,7 @@ var SEL = {
 // フロー管理
 var FLOW_STEP = 0;
 // 0=area, 1=employment, 2=jobType → search
-// 3=refine_genre, 4=refine_shift, 5=refine_feature, 6=refine_salary → final search
+// 3=refine_genre, 4=refine_shift, 5=refine_feature, 6=refine_store_feature, 7=refine_salary → final search
 var STAGE = "questioning"; // questioning → results → afterresults
 var areaSubStep = "region";
 var selectedRegions = [];
@@ -397,38 +397,87 @@ var GENRE_LIST = [
 ];
 
 var SHIFT_LIST = [
-  {code:"shift001",name:"平日のみOK"},
-  {code:"shift002",name:"土日のみOK"},
-  {code:"shift003",name:"早朝・朝の仕事"},
-  {code:"shift004",name:"深夜勤務"},
-  {code:"shift005",name:"シフト自己申告"},
-  {code:"shift007",name:"ランチのみ"},
-  {code:"shift008",name:"ディナーのみ"},
-  {code:"shift009",name:"週2日以内"},
-  {code:"shift010",name:"週3日以内"},
-  {code:"shift011",name:"週4日以上"},
-  {code:"shift014",name:"週1日以上"},
-  {code:"shift016",name:"即日勤務可"},
-  {code:"shift018",name:"週休2日"},
-  {code:"shift019",name:"完全週休２日制"},
-  {code:"shift022",name:"時短勤務"},
-  {code:"shift023",name:"残業なし"},
-  {code:"shift000",name:"こだわらない"}
+  {code:"即日勤務可",      name:"即日勤務可"},
+  {code:"週休2日",        name:"週休2日"},
+  {code:"完全週休２日制",  name:"完全週休２日制"},
+  {code:"月8日以上休み",   name:"月8日以上休み"},
+  {code:"月９休",          name:"月９休"},
+  {code:"ランチのみ",      name:"ランチのみ"},
+  {code:"ディナーのみ",    name:"ディナーのみ"},
+  {code:"平日のみOK",      name:"平日のみOK"},
+  {code:"土日祝のみOK",    name:"土日祝のみOK"},
+  {code:"早朝・朝の仕事",  name:"早朝・朝の仕事"},
+  {code:"深夜勤務",        name:"深夜勤務"},
+  {code:"シフト自己申告",  name:"シフト自己申告"},
+  {code:"週1日以上",       name:"週1日以上"},
+  {code:"週2日以内",       name:"週2日以内"},
+  {code:"週3日以内",       name:"週3日以内"},
+  {code:"週4日以上",       name:"週4日以上"},
+  {code:"日曜日定休日",    name:"日曜日定休日"},
+  {code:"時短勤務",        name:"時短勤務"},
+  {code:"残業なし",        name:"残業なし"},
+  {code:"shift000",        name:"こだわらない"}
 ];
 
 var FEATURE_LIST = [
-  {code:"gf001",name:"資格取得支援"},
-  {code:"gf003",name:"接客が身に付く"},
-  {code:"gf004",name:"社員登用あり"},
-  {code:"gf005",name:"研修制度有"},
-  {code:"gf006",name:"料理が上手くなる"},
-  {code:"gf012",name:"経験者・資格者活躍中"},
-  {code:"gf013",name:"フリーター活躍中"},
-  {code:"gf014",name:"高校生活躍中"},
-  {code:"gf015",name:"大学生活躍中"},
-  {code:"gf016",name:"主婦・主夫活躍中"},
-  {code:"gf017",name:"女性活躍中"},
-  {code:"gf000",name:"こだわらない"}
+  {code:"未経験OK",         name:"未経験OK"},
+  {code:"経験者・資格者活躍中", name:"経験者・資格者活躍中"},
+  {code:"フリーター活躍中", name:"フリーター活躍中"},
+  {code:"大学生活躍中",     name:"大学生活躍中"},
+  {code:"主婦・主夫活躍中", name:"主婦・主夫活躍中"},
+  {code:"女性活躍中",       name:"女性活躍中"},
+  {code:"シニア活躍中",     name:"シニア活躍中"},
+  {code:"高校生活躍中",     name:"高校生活躍中"},
+  {code:"学歴不問",         name:"学歴不問"},
+  {code:"年齢不問",         name:"年齢不問"},
+  {code:"正社員積極採用",   name:"正社員積極採用"},
+  {code:"社員登用あり",     name:"社員登用あり"},
+  {code:"転職支援求人",     name:"転職支援求人"},
+  {code:"資格取得支援",     name:"資格取得支援"},
+  {code:"研修制度有",       name:"研修制度有"},
+  {code:"接客が身に付く",   name:"接客が身に付く"},
+  {code:"料理が上手くなる", name:"料理が上手くなる"},
+  {code:"おもてなしが身に付く", name:"おもてなしが身に付く"},
+  {code:"お酒が学べる",     name:"お酒が学べる"},
+  {code:"海外旅行・研修あり", name:"海外旅行・研修あり"},
+  {code:"英語が活かせる",   name:"英語が活かせる"},
+  {code:"高収入・高給",     name:"高収入・高給"},
+  {code:"昇給あり",         name:"昇給あり"},
+  {code:"昇格あり",         name:"昇格あり"},
+  {code:"交通費支給",       name:"交通費支給"},
+  {code:"制服支給",         name:"制服支給"},
+  {code:"gf000",            name:"こだわらない"}
+];
+
+// お店の特徴リスト（店舗CSVより）
+var STORE_FEATURE_LIST = [
+  {code:"駅近のお店",           name:"駅近のお店"},
+  {code:"オフィス街のお店",     name:"オフィス街のお店"},
+  {code:"繁華街のお店",         name:"繁華街のお店"},
+  {code:"観光地のお店",         name:"観光地のお店"},
+  {code:"ランドマークのお店",   name:"ランドマークのお店"},
+  {code:"隠れ家・一軒家のお店", name:"隠れ家・一軒家のお店"},
+  {code:"高級店",               name:"高級店"},
+  {code:"チェーン店",           name:"チェーン店"},
+  {code:"有名企業が運営",       name:"有名企業が運営"},
+  {code:"雑誌掲載のお店",       name:"雑誌掲載のお店"},
+  {code:"ロケ地なお店",         name:"ロケ地なお店"},
+  {code:"テイクアウトができるお店", name:"テイクアウトができるお店"},
+  {code:"専門食材のお店",       name:"専門食材のお店"},
+  {code:"オープンキッチン",     name:"オープンキッチン"},
+  {code:"ホテルのレストラン",   name:"ホテルのレストラン"},
+  {code:"常連客が多いお店",     name:"常連客が多いお店"},
+  {code:"サラリーマン客多め",   name:"サラリーマン客多め"},
+  {code:"女性客が多め",         name:"女性客が多め"},
+  {code:"男性客が多め",         name:"男性客が多め"},
+  {code:"20代客多め",           name:"20代客多め"},
+  {code:"30代客多め",           name:"30代客多め"},
+  {code:"大学生が多く働く",     name:"大学生が多く働く"},
+  {code:"フリーターが多く働く", name:"フリーターが多く働く"},
+  {code:"主婦が多く働く",       name:"主婦が多く働く"},
+  {code:"女性が多く働く",       name:"女性が多く働く"},
+  {code:"アパレルブランドが運営", name:"アパレルブランドが運営"},
+  {code:"sf000",                name:"こだわらない"}
 ];
 
 // 市区町村データ（主要都道府県）
@@ -849,14 +898,36 @@ function confirmFeature() {
   var codes = getCheckedFrom('feature-list');
   if (codes.indexOf('gf000') >= 0 || !codes.length) { SEL.features = []; }
   else { SEL.features = codes; }
-  var names = SEL.features.map(function(c){ return FEATURE_LIST.find(function(f){return f.code===c;}).name; });
+  var names = SEL.features.slice();
   addUserMsg(names.length ? names.join('・') : 'こだわらない');
   FLOW_STEP = 6;
   askFlowStep();
 }
 
 
-// ===== 給与選択（絞り込み⑤） =====
+// ===== お店の特徴選択（絞り込み⑤） =====
+function renderStoreFeatureSelector() {
+  var html = '<div style="font-weight:700;margin-bottom:8px;">お店の特徴はありますか？🏪</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-bottom:6px;">複数選択できます</div>'
+    +'<div id="store-feature-list" style="display:flex;flex-wrap:wrap;">';
+  STORE_FEATURE_LIST.forEach(function(f){ html += chip(f.code, f.name, 'store-feature'); });
+  html += '</div><div style="display:flex;gap:6px;margin-top:10px;">'
+    +'<button onclick="confirmStoreFeature()" style="'+S.btnP+'flex:1;">この条件で検索する 🔍</button>'
+    +'</div>';
+  return html;
+}
+
+function confirmStoreFeature() {
+  var codes = getCheckedFrom('store-feature-list');
+  if (codes.indexOf('sf000') >= 0 || !codes.length) { SEL.storeFeatures = []; }
+  else { SEL.storeFeatures = codes; }
+  var names = SEL.storeFeatures.slice();
+  addUserMsg(names.length ? names.join('・') : 'こだわらない');
+  FLOW_STEP = 7;
+  askFlowStep();
+}
+
+// ===== 給与選択（絞り込み⑥） =====
 function renderSalarySelector() {
   // 雇用形態に応じて時給 or 月給を切り替え
   var isPartTime = SEL.employment.indexOf('pt') >= 0 ||
@@ -915,6 +986,8 @@ function askFlowStep() {
   } else if (FLOW_STEP === 5) {
     appendMsg('bot', renderFeatureSelector());
   } else if (FLOW_STEP === 6) {
+    appendMsg('bot', renderStoreFeatureSelector());
+  } else if (FLOW_STEP === 7) {
     appendMsg('bot', renderSalarySelector());
   }
 }
@@ -958,12 +1031,11 @@ function filterJobs() {
   }).filter(Boolean);
   // codeがgenre名そのもの（"g00"のこだわらないは除外）
   var genreNames = SEL.genres.filter(function(c){ return c !== 'g00'; });
-  var shiftNames = SEL.shifts.map(function(c){
-    var s=SHIFT_LIST.find(function(x){return x.code===c;}); return s?s.name:'';
-  }).filter(Boolean);
-  var featureNames = SEL.features.map(function(c){
-    var f=FEATURE_LIST.find(function(x){return x.code===c;}); return f?f.name:'';
-  }).filter(Boolean);
+  var shiftNames = SEL.shifts.filter(function(c){ return c !== "shift000"; });
+  // codeがfeature名そのもの（"gf000"のこだわらないは除外）
+  var featureNames = SEL.features.filter(function(c){ return c !== 'gf000'; });
+  // codeがstoreFeature名そのもの（"sf000"のこだわらないは除外）
+  var storeFeatureNames = (SEL.storeFeatures||[]).filter(function(c){ return c !== 'sf000'; });
 
   return JOB_DATA.filter(function(j){
     var text=[j.title,j.company,j.area,j.pref,j.city,j.station,
@@ -1012,12 +1084,23 @@ function filterJobs() {
       });
       if (!gm) return false;
     }
-    // シフト
+    // シフト（shift フィールドの、区切り完全一致）
     if (shiftNames.length) {
-      var shm=shiftNames.some(function(n){
-        return text.indexOf(n.toLowerCase().substring(0,5))>=0;
-      });
+      var jobShifts = (j.shift||'').split('、');
+      var shm = shiftNames.some(function(n){ return jobShifts.indexOf(n) >= 0; });
       if (!shm) return false;
+    }
+    // こだわり（featuresフィールドの、区切り完全一致）
+    if (featureNames.length) {
+      var jobFeatures = (j.features||'').split('、');
+      var fm = featureNames.some(function(n){ return jobFeatures.indexOf(n) >= 0; });
+      if (!fm) return false;
+    }
+    // お店の特徴（storeFeaturesフィールドの<>区切り完全一致）
+    if (storeFeatureNames.length) {
+      var jobSF = (j.storeFeatures||'').split('<>');
+      var sfm = storeFeatureNames.some(function(n){ return jobSF.indexOf(n) >= 0; });
+      if (!sfm) return false;
     }
     // 給与フィルタ（テキストマッチ）
     if (SEL.salary) {
@@ -1161,7 +1244,7 @@ function showResults(matched, searchUrl) {
 
 // ===== 再検索 =====
 function resetSearch() {
-  SEL={prefs:[],cities:[],stations:[],employment:[],jobTypes:[],genres:[],shifts:[],features:[]};
+  SEL={prefs:[],cities:[],stations:[],employment:[],jobTypes:[],genres:[],shifts:[],features:[],storeFeatures:[]};
   FLOW_STEP=0; STAGE='questioning'; selectedRegions=[];
   appendMsg('bot','条件をリセットしました！🔄<br>もう一度条件を教えてください。<br><br>'+renderRegionSelector());
 }
